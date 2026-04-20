@@ -11,22 +11,21 @@ At this stage, we are building the Minimum Viable Product (MVP). There is NO Mac
 - **No ML, No Tensors:** Do not import PyTorch in this module yet. We are purely focusing on process management and JSON parsing.
 
 ## 2. COMMUNICATION PROTOCOL (GAME PROCESS MANAGEMENT)
-- *CommunicationMod* works by reading from standard input (`stdin`) and writing to standard output (`stdout`).
+- **CRITICAL ARCHITECTURE SHIFT:** *CommunicationMod* works by spawning the Python script as a subprocess, not the other way around.
 - You must create a dedicated `GameProcessManager` class that:
-  1. Spawns the *Slay the Spire* game as a subprocess.
-  2. Reads the incoming JSON state line-by-line from the game's `stdout` without blocking indefinitely (handle timeouts).
-  3. Sends JSON commands (e.g., `{"command": "PLAY", "index": 1}`) to the game's `stdin`.
-- **Error Handling:** If the game process crashes, the environment must gracefully catch the exception, close the subprocess, and allow for a clean restart.
+  1. Writes the initial `"ready"` handshake to its own `sys.stdout` to inform the mod it is alive.
+  2. Reads the incoming JSON state line-by-line from its own `sys.stdin` automatically provided by CommunicationMod.
+  3. Sends plain-text commands (e.g., `START ironclad`, `PLAY 1 0`, `END`) to its own `sys.stdout`.
+- **Log Management:** All Python print statements and logs intended for the developer must be routed to `sys.stderr`, as `sys.stdout` is strictly reserved for the CommunicationMod protocol.
 
 ## 3. THE GYMNASIUM WRAPPER STUB
 Create a class `SlayTheSpireEnv(gymnasium.Env)`. For this MVP, implement the bare minimum:
 - `__init__()`: Initialize the `GameProcessManager`. Set `action_space` and `observation_space` to simple, temporary dummy spaces (e.g., `Discrete(100)` and `Box()`), as we will define the strict ML spaces in Phase 2.
-- `reset()`: Send the command to start a new run with Ironclad. Wait for the initial state JSON and return a dummy observation.
+- `reset()`: Signal readiness to the CommunicationMod. Wait for the initial JSON state on stdin. If at the main menu, send the command `START ironclad`. Return a dummy observation.
 - `step(action)`: 
-  1. Translate the dummy action into a valid text command based on the `available_commands` from the current JSON state.
-  2. Send the command to the game.
-  3. Read the new JSON state.
-  4. Return `(obs, reward, terminated, truncated, info)`. For now, `reward` is 0, and `terminated` is True if the JSON indicates death or the end of Act 1.
+  1. Forward the plain-text string command to the `GameProcessManager` which sends it to stdout.
+  2. Block to read the new JSON state from stdin.
+  3. Return `(obs, reward, terminated, truncated, info)`. For now, `reward` is 0, and `terminated` is True if the JSON indicates death or the end of Act 1.
 
 ## 4. THE RANDOM EXECUTION LOOP
-Write a `main.py` script that instantiates `SlayTheSpireEnv` and runs a `while` loop. In each step, the agent parses the `available_commands` array from the raw JSON state, uses `random.choice()` to pick one, and passes it to `env.step()`.
+Write a `main.py` script that instantiates `SlayTheSpireEnv` and runs a `while` loop. In each step, the agent parses the `available_commands` array from the raw JSON state, uses it to construct a valid plain-text command (e.g., picking a random target for a PLAY command), and passes it to `env.step()`. This script must be specified in the CommunicationMod `config.properties` file so the game launches it automatically.
