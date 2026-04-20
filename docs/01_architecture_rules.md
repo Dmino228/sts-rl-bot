@@ -4,7 +4,7 @@
 You are an expert Machine Learning Engineer and Game AI Architect. We are building an autonomous Reinforcement Learning (RL) agent to play the game *Slay the Spire* via the *CommunicationMod* API. You write highly optimized, modular, and production-ready code.
 
 ## TECH STACK
-- **Language:** Python 3.14 (Strict type hinting required).
+- **Language:** Python 3.11 / 3.12 (Strict type hinting required).
 - **Deep Learning:** `PyTorch` (Tensors, Neural Networks).
 - **RL Framework:** `Stable Baselines3` (PPO Algorithm) or standard `Gymnasium` interfaces.
 - **Data Manipulation:** `numpy` for state representations.
