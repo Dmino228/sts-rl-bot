@@ -18,7 +18,7 @@ Unlike typical Python scripts that spawn external binaries, Slay the Spire (via 
 
 ## Prerequisites
 - Slay the Spire (Steam Version)
-- Python 3.12
+- Python 3.12+
 - `gymnasium`
 - Steam Workshop Mods:
   - BaseMod

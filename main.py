@@ -14,99 +14,14 @@ Usage:
 import sys
 import random
 import time
+import numpy as np
 from typing import List
 
 from env import SlayTheSpireEnv
 
 
-def pick_random_action(state: dict) -> str:
-    """Pick a random valid action from available_commands in the game state.
-
-    CommunicationMod provides available_commands as a list of command names
-    like ["play", "end", "potion", "proceed", "choose", ...].
-    We need to build a full command string.
-    """
-    available = state.get("available_commands", [])
-    if not isinstance(available, list) or not available:
-        return "STATE"
-
-    command = random.choice(available)
-    game_state = state.get("game_state", {})
-    if not isinstance(game_state, dict):
-        game_state = {}
-
-    combat_state = game_state.get("combat_state")
-
-    if command == "play":
-        # Play a random card, pick a random target if needed
-        hand = []
-        if combat_state and isinstance(combat_state, dict):
-            hand = combat_state.get("hand", [])
-        if hand:
-            card_index = random.randint(1, len(hand))  # 1-indexed
-            card = hand[card_index - 1]
-            if card.get("has_target", False):
-                monsters = combat_state.get("monsters", [])
-                alive = [i for i, m in enumerate(monsters) if not m.get("is_gone", True) and not m.get("half_dead", False)]
-                if alive:
-                    target = random.choice(alive)
-                    return f"PLAY {card_index} {target}"
-                else:
-                    return f"PLAY {card_index} 0"
-            else:
-                return f"PLAY {card_index}"
-        else:
-            return "END"
-
-    elif command == "end":
-        return "END"
-
-    elif command == "proceed":
-        return "PROCEED"
-
-    elif command == "choose":
-        choices = game_state.get("choice_list", [])
-        if choices:
-            choice_index = random.randint(0, len(choices) - 1)
-            return f"CHOOSE {choice_index}"
-        else:
-            # Sometimes choices are available but choice_list empty — try index 0
-            return "CHOOSE 0"
-
-    elif command == "return":
-        return "RETURN"
-
-    elif command == "potion":
-        potions = game_state.get("potions", [])
-        usable = [(i, p) for i, p in enumerate(potions) if p.get("can_use", False)]
-        if usable:
-            idx, potion = random.choice(usable)
-            if potion.get("requires_target", False) and combat_state:
-                monsters = combat_state.get("monsters", [])
-                alive = [i for i, m in enumerate(monsters) if not m.get("is_gone", True)]
-                target = random.choice(alive) if alive else 0
-                return f"POTION Use {idx} {target}"
-            else:
-                return f"POTION Use {idx}"
-        else:
-            discardable = [(i, p) for i, p in enumerate(potions) if p.get("can_discard", False)]
-            if discardable:
-                idx, _ = random.choice(discardable)
-                return f"POTION Discard {idx}"
-            return "PROCEED"
-
-    elif command == "state":
-        return "STATE"
-
-    elif command == "wait":
-        return "WAIT 100"
-
-    else:
-        return command.upper()
-
-
 def main() -> None:
-    print("Phase 1: Blind & Deaf Random Agent starting...", file=sys.stderr)
+    print("Phase 2: Encoded Random Agent starting...", file=sys.stderr)
 
     env = SlayTheSpireEnv()
 
@@ -116,7 +31,6 @@ def main() -> None:
         print(f"FATAL: Failed to reset environment: {e}", file=sys.stderr)
         return
 
-    raw_state = info.get("raw_state", {})
     terminated = False
     truncated = False
     step_count = 0
@@ -124,14 +38,32 @@ def main() -> None:
     print("Random agent loop started.", file=sys.stderr)
 
     while not terminated and not truncated:
-        action = pick_random_action(raw_state)
-        print(f"[Step {step_count}] Action: {action}", file=sys.stderr)
+        action_mask = info.get("action_mask", np.zeros(100, dtype=np.int8))
+        valid_actions = np.where(action_mask == 1)[0]
+        
+        if len(valid_actions) > 0:
+            action = int(np.random.choice(valid_actions))
+        else:
+            action = 98 # Fallback to STATE
+            
+        action_str = env.action_mapper.get_action_string(action)
+        
+        # Debug parsing
+        raw_state = info.get("raw_state", {})
+        game_state = raw_state.get("game_state", {}) if isinstance(raw_state, dict) else {}
+        combat_state = game_state.get("combat_state", {}) if isinstance(game_state, dict) else {}
+        player = combat_state.get("player", {}) if isinstance(combat_state, dict) else {}
+        energy = player.get("energy", 0) if isinstance(player, dict) else 0
+        hand = combat_state.get("hand", []) if isinstance(combat_state, dict) else []
+        
+        print(f"[Step {step_count}] Action: {action} ({action_str})", file=sys.stderr)
+        print(f"DEBUG: Wybrano akcję {action_str}, Energia: {energy}, Karty: {len(hand)}", file=sys.stderr)
 
         obs, reward, terminated, truncated, info = env.step(action)
-        raw_state = info.get("raw_state", {})
         step_count += 1
 
         if step_count % 50 == 0:
+            raw_state = info.get("raw_state", {})
             in_game = raw_state.get("in_game", False)
             gs = raw_state.get("game_state", {})
             if isinstance(gs, dict):

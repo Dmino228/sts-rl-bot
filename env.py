@@ -12,6 +12,8 @@ import sys
 from typing import Optional, Tuple, Dict, Any, List
 
 from process_manager import GameProcessManager
+from action_space import ActionMapper, ActionMasker
+from state_encoder import StateEncoder
 
 
 class SlayTheSpireEnv(gym.Env):
@@ -26,9 +28,12 @@ class SlayTheSpireEnv(gym.Env):
 
         self.process_manager = GameProcessManager(timeout=120.0)
 
-        # Dummy spaces for MVP — will be replaced in Phase 2
-        self.action_space = spaces.Discrete(100)
-        self.observation_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.action_mapper = ActionMapper()
+        self.action_masker = ActionMasker()
+        self.state_encoder = StateEncoder()
+
+        self.action_space = gym.spaces.Discrete(self.action_mapper.action_space_size)
+        self.observation_space = self.state_encoder.observation_space
 
         self.current_state: Dict[str, Any] = {}
         self._first_reset: bool = True
@@ -66,32 +71,35 @@ class SlayTheSpireEnv(gym.Env):
             print(f"Exception during reset: {e}", file=sys.stderr)
             raise
 
-        dummy_obs = np.zeros(10, dtype=np.float32)
-        return dummy_obs, {"raw_state": self.current_state}
+        obs = self.state_encoder.encode(self.current_state)
+        mask = self.action_masker.get_mask(self.current_state)
+        return obs, {"raw_state": self.current_state, "action_mask": mask}
 
     def step(
-        self, action: str
+        self, action: int
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
-        Send a plain-text command, read the next state.
+        Send a mapped text command, read the next state.
 
         Args:
-            action: A plain-text CommunicationMod command, e.g. "PLAY 1 0", "END", "PROCEED"
+            action: An integer mapped to a CommunicationMod command.
 
         Returns:
             (obs, reward, terminated, truncated, info)
         """
         try:
-            self.process_manager.send_command(action)
+            action_str = self.action_mapper.get_action_string(action)
+            self.process_manager.send_command(action_str)
             self.current_state = self.process_manager.read_state()
         except Exception as e:
             print(f"Exception during step: {e}", file=sys.stderr)
+            mask = np.zeros(self.action_space.n, dtype=np.int8)
             return (
-                np.zeros(10, dtype=np.float32),
+                np.zeros(self.observation_space.shape, dtype=np.float32),
                 0.0,
                 True,
                 False,
-                {"error": str(e), "raw_state": self.current_state},
+                {"error": str(e), "raw_state": self.current_state, "action_mask": mask},
             )
 
         # Check for termination
@@ -108,12 +116,13 @@ class SlayTheSpireEnv(gym.Env):
             if act > 1:
                 terminated = True
 
-        dummy_obs = np.zeros(10, dtype=np.float32)
+        obs = self.state_encoder.encode(self.current_state)
         reward = 0.0
         truncated = False
-        info: Dict[str, Any] = {"raw_state": self.current_state}
+        mask = self.action_masker.get_mask(self.current_state)
+        info: Dict[str, Any] = {"raw_state": self.current_state, "action_mask": mask}
 
-        return dummy_obs, reward, terminated, truncated, info
+        return obs, reward, terminated, truncated, info
 
     def get_available_commands(self) -> List[str]:
         """Extract available_commands from the current state."""
