@@ -37,6 +37,9 @@ class SlayTheSpireEnv(gym.Env):
 
         self.current_state: Dict[str, Any] = {}
         self._first_reset: bool = True
+        
+        self.previous_hp: Optional[int] = None
+        self.previous_floor: Optional[int] = None
 
     def reset(
         self,
@@ -70,6 +73,10 @@ class SlayTheSpireEnv(gym.Env):
         except Exception as e:
             print(f"Exception during reset: {e}", file=sys.stderr)
             raise
+            
+        # Reset reward tracking
+        self.previous_hp = None
+        self.previous_floor = None
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self.action_masker.get_mask(self.current_state)
@@ -117,7 +124,7 @@ class SlayTheSpireEnv(gym.Env):
                 terminated = True
 
         obs = self.state_encoder.encode(self.current_state)
-        reward = 0.0
+        reward = self._calculate_reward()
         truncated = False
         mask = self.action_masker.get_mask(self.current_state)
         info: Dict[str, Any] = {"raw_state": self.current_state, "action_mask": mask}
@@ -130,6 +137,36 @@ class SlayTheSpireEnv(gym.Env):
         if isinstance(commands, list):
             return commands
         return []
+
+    def get_action_mask(self) -> np.ndarray:
+        """Returns the binary mask of valid actions for sb3-contrib ActionMasker."""
+        return self.action_masker.get_mask(self.current_state)
+
+    def _calculate_reward(self) -> float:
+        """Placeholder reward: penalize HP loss, reward floor progress."""
+        if not self.current_state:
+            return 0.0
+            
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            return 0.0
+            
+        current_hp = game_state.get("current_hp")
+        current_floor = game_state.get("floor")
+        
+        reward = 0.0
+        
+        if current_hp is not None and self.previous_hp is not None:
+            hp_delta = current_hp - self.previous_hp
+            reward += hp_delta * 0.1
+        self.previous_hp = current_hp
+            
+        if current_floor is not None and self.previous_floor is not None:
+            if current_floor > self.previous_floor:
+                reward += 1.0
+        self.previous_floor = current_floor
+            
+        return reward
 
     def close(self) -> None:
         """No-op — CommunicationMod manages our lifecycle."""
