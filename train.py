@@ -1,9 +1,19 @@
 import sys
 import os
+
+# 1. IMMEDIATE HANDSHAKE (Beat the CommunicationMod timeout)
+sys.__stdout__.write("ready\n")
+sys.__stdout__.flush()
+
+# 2. SILENCE STABLE BASELINES3 (Protect the pipe from ASCII progress bars)
+sys.stdout = sys.stderr
+
+# 3. HEAVY IMPORTS (Now we can safely take 15 seconds to load PyTorch)
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3.common.logger import configure
 from env import SlayTheSpireEnv
 
 def mask_fn(env: SlayTheSpireEnv):
@@ -34,9 +44,13 @@ def main():
     model = MaskablePPO(
         "MlpPolicy",
         vec_env,
-        verbose=1,
+        verbose=0,
         tensorboard_log="./ppo_sts_tensorboard/"
     )
+    
+    # Completely bypass stdout to protect the CommunicationMod pipe
+    custom_logger = configure("./ppo_sts_tensorboard/", ["tensorboard", "csv"])
+    model.set_logger(custom_logger)
     
     # 4. Training Loop with graceful exit
     total_timesteps = 100_000

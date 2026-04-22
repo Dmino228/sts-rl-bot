@@ -14,6 +14,11 @@ Usage:
 import sys
 import random
 import time
+
+# Immediate handshake
+sys.__stdout__.write("ready\n")
+sys.__stdout__.flush()
+
 import numpy as np
 from typing import List
 

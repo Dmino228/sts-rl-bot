@@ -32,8 +32,8 @@ class GameProcessManager:
 
     def signal_ready(self) -> None:
         """Send the 'ready' handshake to CommunicationMod."""
-        sys.stdout.write("ready\n")
-        sys.stdout.flush()
+        sys.__stdout__.write("ready\n")
+        sys.__stdout__.flush()
         logger.info("Sent 'ready' signal to CommunicationMod.")
 
     def read_state(self) -> Dict[str, Any]:
@@ -86,8 +86,8 @@ class GameProcessManager:
             PROCEED
             STATE
         """
-        sys.stdout.write(command + "\n")
-        sys.stdout.flush()
+        sys.__stdout__.write(command + "\n")
+        sys.__stdout__.flush()
         logger.debug(f"Sent command: {command}")
 
     def stop(self) -> None:

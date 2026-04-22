@@ -2,3 +2,5 @@
 __pycache__
 structure.txt
 python_code_bundle.txt
+models
+ppo_sts_tensorboard

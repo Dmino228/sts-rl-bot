@@ -36,7 +36,6 @@ class SlayTheSpireEnv(gym.Env):
         self.observation_space = self.state_encoder.observation_space
 
         self.current_state: Dict[str, Any] = {}
-        self._first_reset: bool = True
         
         self.previous_hp: Optional[int] = None
         self.previous_floor: Optional[int] = None
@@ -49,26 +48,38 @@ class SlayTheSpireEnv(gym.Env):
         """Wait for the initial game state from CommunicationMod."""
         super().reset(seed=seed)
 
-        if self._first_reset:
-            # On first reset, signal ready and wait for game to send initial state
-            self.process_manager.signal_ready()
-            self._first_reset = False
-
         try:
             print("Waiting for game state from CommunicationMod...", file=sys.stderr)
             self.current_state = self.process_manager.read_state()
-            print(
-                f"Received state. game_state={self.current_state.get('game_state', {})}, "
-                f"in_game={self.current_state.get('in_game', False)}",
-                file=sys.stderr,
-            )
-
-            # If we land on the main menu, start a new run
-            if not self.current_state.get("in_game", False):
-                print("At main menu. Sending START ironclad...", file=sys.stderr)
-                self.process_manager.send_command("START ironclad")
+            # Cleanup Loop to exit Death/Victory screens and return to Main Menu
+            while True:
+                in_game = self.current_state.get("in_game", False)
+                available_cmds = self.current_state.get("available_commands", [])
+                
+                if not in_game and "start" in available_cmds:
+                    print("At main menu. Sending START ironclad...", file=sys.stderr)
+                    self.process_manager.send_command("START ironclad")
+                    break
+                elif "proceed" in available_cmds:
+                    self.process_manager.send_command("PROCEED")
+                elif "return" in available_cmds:
+                    self.process_manager.send_command("RETURN")
+                elif "confirm" in available_cmds:
+                    self.process_manager.send_command("CONFIRM")
+                else:
+                    # Safe fallback to advance frame and re-poll state
+                    self.process_manager.send_command("STATE")
+                
                 self.current_state = self.process_manager.read_state()
-                print("New run started.", file=sys.stderr)
+
+            # Wait until NeowRoom is loaded (i.e. in_game == True)
+            while True:
+                self.current_state = self.process_manager.read_state()
+                if self.current_state.get("in_game", False):
+                    print("New run started.", file=sys.stderr)
+                    break
+                # Request next state if the game is still transitioning
+                self.process_manager.send_command("STATE")
 
         except Exception as e:
             print(f"Exception during reset: {e}", file=sys.stderr)
