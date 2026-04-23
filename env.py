@@ -50,12 +50,26 @@ class SlayTheSpireEnv(gym.Env):
 
         try:
             print("Waiting for game state from CommunicationMod...", file=sys.stderr)
-            self.current_state = self.process_manager.read_state()
-            # Cleanup Loop to exit Death/Victory screens and return to Main Menu
-            while True:
+
+            # If we already have state from step() (e.g. death/victory screen),
+            # reuse it instead of blocking on a fresh read_state() — which would
+            # deadlock because CommunicationMod is waiting for OUR command.
+            if not self.current_state:
+                self.current_state = self.process_manager.read_state()
+
+            # Cleanup Loop: navigate through Game Over / Victory / Score screens
+            # back to Main Menu where "start" is available.
+            max_cleanup_steps = 30
+            for cleanup_step in range(max_cleanup_steps):
                 in_game = self.current_state.get("in_game", False)
                 available_cmds = self.current_state.get("available_commands", [])
-                
+
+                print(
+                    f"[reset cleanup #{cleanup_step}] in_game={in_game}, "
+                    f"cmds={available_cmds}",
+                    file=sys.stderr,
+                )
+
                 if not in_game and "start" in available_cmds:
                     print("At main menu. Sending START ironclad...", file=sys.stderr)
                     self.process_manager.send_command("START ironclad")
@@ -69,17 +83,32 @@ class SlayTheSpireEnv(gym.Env):
                 else:
                     # Safe fallback to advance frame and re-poll state
                     self.process_manager.send_command("STATE")
-                
+
                 self.current_state = self.process_manager.read_state()
+            else:
+                raise RuntimeError(
+                    f"Could not reach main menu after {max_cleanup_steps} cleanup steps. "
+                    f"Last state: in_game={self.current_state.get('in_game')}, "
+                    f"cmds={self.current_state.get('available_commands')}"
+                )
 
             # Wait until NeowRoom is loaded (i.e. in_game == True)
-            while True:
+            for wait_step in range(max_cleanup_steps):
                 self.current_state = self.process_manager.read_state()
                 if self.current_state.get("in_game", False):
                     print("New run started.", file=sys.stderr)
                     break
+                print(
+                    f"[reset wait #{wait_step}] Still transitioning...",
+                    file=sys.stderr,
+                )
                 # Request next state if the game is still transitioning
                 self.process_manager.send_command("STATE")
+            else:
+                raise RuntimeError(
+                    f"Game did not enter in_game=True after START. "
+                    f"Last state: {self.current_state.get('game_state', {}).get('screen_type', 'unknown')}"
+                )
 
         except Exception as e:
             print(f"Exception during reset: {e}", file=sys.stderr)
