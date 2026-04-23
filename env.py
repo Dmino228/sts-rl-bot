@@ -135,7 +135,7 @@ class SlayTheSpireEnv(gym.Env):
             (obs, reward, terminated, truncated, info)
         """
         try:
-            action_str = self.action_mapper.get_action_string(action)
+            action_str = self.action_mapper.get_action_string(action, self.current_state)
             self.process_manager.send_command(action_str)
             self.current_state = self.process_manager.read_state()
         except Exception as e:

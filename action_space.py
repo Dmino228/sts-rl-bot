@@ -8,7 +8,7 @@ class ActionMapper:
     def __init__(self):
         self.action_space_size = 100
 
-    def get_action_string(self, action_id: int) -> str:
+    def get_action_string(self, action_id: int, state: Dict[str, Any] = None) -> str:
         if 0 <= action_id <= 9:
             # Untargeted card
             card_idx = action_id + 1
@@ -26,11 +26,33 @@ class ActionMapper:
         elif action_id == 65:
             return "END"
         elif action_id == 66:
+            if state:
+                cmds = state.get("available_commands", [])
+                if "confirm" in cmds:
+                    return "CONFIRM"
+                elif "proceed" in cmds:
+                    return "PROCEED"
+                elif state.get("game_state", {}).get("screen_type") == "GRID":
+                    # Fallback for GRID: confirm is the intended action
+                    return "CONFIRM"
             return "PROCEED"
         elif action_id == 67:
             return "RETURN"
         elif 68 <= action_id <= 97:
             choice_idx = action_id - 68
+            
+            if state:
+                game_state = state.get("game_state", {})
+                screen_type = game_state.get("screen_type", "NONE") if game_state else "NONE"
+                available_cmds = state.get("available_commands", [])
+                
+                if screen_type == "GRID" and "choose" not in available_cmds:
+                    row = choice_idx // 5
+                    col = choice_idx % 5
+                    X = 500 + (col * 230)
+                    Y = 400 + (row * 350)
+                    return f"CLICK Left {X} {Y}"
+                    
             return f"CHOOSE {choice_idx}"
         elif action_id == 98:
             return "STATE"
@@ -98,6 +120,51 @@ class ActionMasker:
             
             for i in range(min(num_choices, 30)):
                 mask[68 + i] = 1
+                
+        # Strict GRID Screen Logic Override
+        # Logs prove: CommunicationMod DOES provide "choose" on GRID screens.
+        # The real bug: after card selection, "cancel" appears in available_commands,
+        # enabling RETURN (mask[67]). The untrained model picks RETURN over CONFIRM,
+        # cancelling the selection and creating an infinite select→cancel loop.
+        # Fix: on GRID, ALWAYS mask out RETURN to force the pipeline:
+        #   select card → confirm. No backing out.
+        # Also: selected_cards is always [] in CommunicationMod JSON, so we use
+        # confirm_up as the sole authoritative signal from the game engine.
+        if screen_type == "GRID":
+            import sys
+            screen_state = game_state.get("screen_state", {})
+            confirm_up = screen_state.get("confirm_up", False)
+            cards = screen_state.get("cards", [])
+            num_choices = len(cards)
+            
+            print(
+                f"[GRID DEBUG] confirm_up={confirm_up}, "
+                f"total_cards={num_choices}, "
+                f"available_cmds={available_cmds}",
+                file=sys.stderr
+            )
+            
+            # ALWAYS block RETURN/cancel on GRID — prevents the infinite loop
+            mask[67] = 0
+            
+            if confirm_up:
+                # Selection complete — force the bot to confirm
+                # Mask out ALL CHOOSE to prevent card toggling
+                for i in range(30):
+                    mask[68 + i] = 0
+                # Force CONFIRM as the ONLY available action
+                mask[66] = 1
+            else:
+                # Still selecting — first clear any CHOOSE set by standard logic
+                # (standard logic uses _get_num_choices which may read choice_list
+                # instead of screen_state.cards, enabling wrong indices)
+                for i in range(30):
+                    mask[68 + i] = 0
+                # Then enable only CHOOSE for actual cards in the grid
+                for i in range(min(num_choices, 30)):
+                    mask[68 + i] = 1
+                # Block CONFIRM until a card is selected
+                mask[66] = 0
 
         if not game_state:
             return mask

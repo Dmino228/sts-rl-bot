@@ -53,7 +53,7 @@ class GameProcessManager:
 
             if not line:
                 # EOF — CommunicationMod closed our stdin (game closed)
-                raise RuntimeError("stdin closed by CommunicationMod (game likely exited).")
+                raise EOFError("Pipe broken - game closed.")
 
             line = line.strip()
             if not line:
