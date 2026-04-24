@@ -4,3 +4,6 @@ structure.txt
 python_code_bundle.txt
 models
 ppo_sts_tensorboard
+logs
+*SlayTheSpire.log
+*communication_mod_errors.log

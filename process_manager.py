@@ -48,7 +48,7 @@ class GameProcessManager:
             try:
                 line = sys.stdin.readline()
             except Exception as e:
-                logger.error(f"Error reading stdin: {e}")
+                logger.error("Error reading stdin: %s", e)
                 raise
 
             if not line:
@@ -63,14 +63,23 @@ class GameProcessManager:
                 state = json.loads(line)
                 if isinstance(state, dict):
                     self._last_state = state
+                    # Log a compact summary of the received state
+                    screen = state.get("game_state", {}).get("screen_type", "?")
+                    in_game = state.get("in_game", "?")
+                    cmds = state.get("available_commands", [])
+                    floor = state.get("game_state", {}).get("floor", "?")
+                    hp = state.get("game_state", {}).get("current_hp", "?")
+                    logger.info(
+                        "[RECV] in_game=%s screen=%s floor=%s hp=%s cmds=%s",
+                        in_game, screen, floor, hp, cmds,
+                    )
                     return state
                 else:
-                    logger.debug(f"Ignored non-dict JSON: {line[:100]}")
+                    logger.debug("Ignored non-dict JSON: %s", line[:100])
                     continue
             except json.JSONDecodeError:
                 # CommunicationMod might send error strings like "Invalid command"
-                logger.warning(f"Non-JSON from CommunicationMod: {line}")
-                print(f"[CommunicationMod]: {line}", file=sys.stderr)
+                logger.warning("[CommunicationMod NON-JSON]: %s", line)
                 continue
 
         raise TimeoutError(f"No JSON state received within {self.timeout}s.")
@@ -88,7 +97,7 @@ class GameProcessManager:
         """
         sys.__stdout__.write(command + "\n")
         sys.__stdout__.flush()
-        logger.debug(f"Sent command: {command}")
+        logger.info("[SEND] %s", command)
 
     def stop(self) -> None:
         """No-op for the stdin/stdout model. Game manages our lifecycle."""
