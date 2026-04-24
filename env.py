@@ -36,9 +36,18 @@ class SlayTheSpireEnv(gym.Env):
         self.observation_space = self.state_encoder.observation_space
 
         self.current_state: Dict[str, Any] = {}
-        
-        self.previous_hp: Optional[int] = None
-        self.previous_floor: Optional[int] = None
+
+        # Reward tracking — V3
+        self.last_player_hp: int = 80
+        self.last_max_hp: int = 80
+        self.last_monster_total_hp: int = 0
+        self.last_floor: int = 0
+        self.last_screen_type: str = "NONE"
+        self.last_relic_count: int = 1
+        self.last_deck_size: int = 10
+        self.last_upgraded_cards: int = 0
+        self.step_count: int = 0
+        self.combat_step_count: int = 0
 
     def reset(
         self,
@@ -114,9 +123,17 @@ class SlayTheSpireEnv(gym.Env):
             print(f"Exception during reset: {e}", file=sys.stderr)
             raise
             
-        # Reset reward tracking
-        self.previous_hp = None
-        self.previous_floor = None
+        # Reset reward tracking — V3
+        self.last_player_hp = 80
+        self.last_max_hp = 80
+        self.last_monster_total_hp = 0
+        self.last_floor = 0
+        self.last_screen_type = "NONE"
+        self.last_relic_count = 1
+        self.last_deck_size = 10
+        self.last_upgraded_cards = 0
+        self.step_count = 0
+        self.combat_step_count = 0
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self.action_masker.get_mask(self.current_state)
@@ -182,30 +199,155 @@ class SlayTheSpireEnv(gym.Env):
         """Returns the binary mask of valid actions for sb3-contrib ActionMasker."""
         return self.action_masker.get_mask(self.current_state)
 
+    # ──────────────────────────────────────────────────────────────
+    # V3 REWARD HELPERS
+    # ──────────────────────────────────────────────────────────────
+
+    def _get_total_monster_hp(self, game_state: Dict[str, Any]) -> int:
+        """Sum current_hp of all alive monsters."""
+        combat_state = game_state.get("combat_state", {})
+        if not combat_state:
+            return 0
+        monsters = combat_state.get("monsters", [])
+        return sum(
+            m.get("current_hp", 0)
+            for m in monsters
+            if not m.get("is_gone", False)
+        )
+
+    def _count_upgraded_cards(self, game_state: Dict[str, Any]) -> int:
+        """Count total upgrade level across all cards in deck."""
+        deck = game_state.get("deck", [])
+        return sum(card.get("upgrades", 0) for card in deck)
+
+    def _is_in_combat(self, state: Dict[str, Any]) -> bool:
+        """Check if we're actively in combat (playing cards)."""
+        screen_type = state.get("game_state", {}).get("screen_type", "NONE")
+        available_cmds = state.get("available_commands", [])
+        return screen_type == "NONE" and "end" in available_cmds
+
+    # ──────────────────────────────────────────────────────────────
+    # V3 REWARD FUNCTION
+    # ──────────────────────────────────────────────────────────────
+
     def _calculate_reward(self) -> float:
-        """Placeholder reward: penalize HP loss, reward floor progress."""
+        """V3 reward: bounded components, defense parity, terminal dominance."""
         if not self.current_state:
             return 0.0
-            
+
         game_state = self.current_state.get("game_state", {})
         if not isinstance(game_state, dict):
             return 0.0
-            
-        current_hp = game_state.get("current_hp")
-        current_floor = game_state.get("floor")
-        
+
         reward = 0.0
-        
-        if current_hp is not None and self.previous_hp is not None:
-            hp_delta = current_hp - self.previous_hp
-            reward += hp_delta * 0.1
-        self.previous_hp = current_hp
-            
-        if current_floor is not None and self.previous_floor is not None:
-            if current_floor > self.previous_floor:
-                reward += 1.0
-        self.previous_floor = current_floor
-            
+
+        # ── Extract current values safely ──
+        screen_type = game_state.get("screen_type", "NONE")
+        current_hp = game_state.get("current_hp", 0)
+        current_max_hp = game_state.get("max_hp", 80)
+        current_floor = game_state.get("floor", 0)
+        current_monster_hp = self._get_total_monster_hp(game_state)
+        current_relic_count = len(game_state.get("relics", []))
+        current_deck_size = len(game_state.get("deck", []))
+        current_upgraded_cards = self._count_upgraded_cards(game_state)
+
+        # Fallback: read HP from combat_state.player if game_state lacks it
+        combat_state = game_state.get("combat_state", {})
+        if combat_state:
+            player = combat_state.get("player", {})
+            if current_hp == 0:
+                current_hp = player.get("current_hp", 0)
+            if current_max_hp == 80:
+                current_max_hp = player.get("max_hp", current_max_hp)
+
+        in_combat = self._is_in_combat(self.current_state)
+
+        # ══════════════════════════════════════════
+        # A. COMBAT REWARDS
+        # ══════════════════════════════════════════
+        if in_combat:
+            # A1. Damage dealt — normalized to /100
+            dmg_dealt = max(0, self.last_monster_total_hp - current_monster_hp)
+            reward += dmg_dealt / 100.0
+
+            # A2. Damage taken — same /100 scale (defense parity)
+            hp_lost = max(0, self.last_player_hp - current_hp)
+            reward -= hp_lost / 100.0
+
+            # A3. Anti-stall — only penalize after 40 combat steps
+            self.combat_step_count += 1
+            if self.combat_step_count > 40:
+                reward -= 0.02
+
+        # ══════════════════════════════════════════
+        # B. MACRO-ECONOMY
+        # ══════════════════════════════════════════
+
+        # B1. Floor progress — PRIMARY signal
+        if current_floor > self.last_floor:
+            reward += 3.0
+
+        # B2. Combat victory (screen transition guard)
+        if screen_type == "COMBAT_REWARD" and self.last_screen_type != "COMBAT_REWARD":
+            reward += 2.0
+            self.combat_step_count = 0
+
+        # B3. Relic acquired
+        if current_relic_count > self.last_relic_count:
+            reward += 1.0
+
+        # B4. Card upgraded
+        if current_upgraded_cards > self.last_upgraded_cards:
+            reward += 0.5
+
+        # B5. Card removed (outside combat only — filters exhaust noise)
+        if current_deck_size < self.last_deck_size and screen_type != "NONE":
+            reward += 0.5
+
+        # B6. Healing (outside combat only)
+        hp_gained = max(0, current_hp - self.last_player_hp)
+        if hp_gained > 0 and not in_combat:
+            reward += hp_gained / 100.0
+
+        # ══════════════════════════════════════════
+        # C. TERMINAL STATES
+        # ══════════════════════════════════════════
+
+        # C1. Death — dominant penalty
+        if current_hp <= 0 or screen_type in ["GAME_OVER", "DEATH"]:
+            reward -= 20.0
+
+        # C2. Act completion (Act 1 victory)
+        current_act = game_state.get("act", 1)
+        if current_act > 1 and screen_type not in ["GAME_OVER", "DEATH"]:
+            reward += 10.0
+
+        # Reset combat counter when leaving combat
+        if not in_combat and self.last_screen_type == "NONE":
+            self.combat_step_count = 0
+
+        # ══════════════════════════════════════════
+        # UPDATE TRACKING STATE (must be LAST)
+        # ══════════════════════════════════════════
+        self.last_player_hp = current_hp
+        self.last_max_hp = current_max_hp
+        self.last_monster_total_hp = current_monster_hp
+        self.last_floor = current_floor
+        self.last_screen_type = screen_type
+        self.last_relic_count = current_relic_count
+        self.last_deck_size = current_deck_size
+        self.last_upgraded_cards = current_upgraded_cards
+
+        # Periodic logging
+        self.step_count += 1
+        if self.step_count % 50 == 0:
+            print(
+                f"[REWARD V3 #{self.step_count}] r={reward:.3f} | "
+                f"hp={current_hp}/{current_max_hp} floor={current_floor} "
+                f"screen={screen_type} combat_steps={self.combat_step_count}",
+                file=sys.stderr,
+            )
+
         return reward
 
     def close(self) -> None:

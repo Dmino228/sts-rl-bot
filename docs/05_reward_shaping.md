@@ -1,38 +1,38 @@
-# 05_REWARD_SHAPING: DOPAMINE FOR THE AGENT (PHASE 4)
+# 05_REWARD_SHAPING: DOPAMINE FOR THE AGENT (PHASE 4 - VERSION 2.0)
 
 ## ROLE & CONTEXT
-The PPO agent is currently running but receiving a flat reward of `0.0`. You must implement a dense Reward Function inside the `SlayTheSpireEnv.step()` method. The bot must learn that dealing damage is good, taking damage is bad, and progressing through the game is the ultimate goal.
+The PPO agent currently has 20/20 vision (Phase 3.5) but lacks a dense reward signal. We are implementing a highly tuned Reward Function inside the `SlayTheSpireEnv.step()` method. The agent must learn macro-economy (Gold, Max HP, Floors) and micro-combat (Damage dealt vs. HP lost).
 
 ## 1. STATE TRACKING (THE DELTAS)
-To calculate rewards, the environment must remember the previous state.
+To calculate rewards, the environment must remember the state from the *previous* step.
 - In `__init__()` and `reset()`, initialize tracking variables:
   - `self.last_player_hp = 80`
-  - `self.last_monster_total_hp = 0`
+  - `self.last_max_hp = 80`
+  - `self.last_gold = 99`
   - `self.last_floor = 0`
+  - `self.last_monster_total_hp = 0`
+  - `self.last_screen_type = "NONE"`
 
-- Inside `step(action)`, BEFORE overwriting the current state, you must calculate the deltas based on the newly parsed JSON state from the game.
+## 2. THE REWARD FORMULA V2.0
+Initialize `reward = 0.0` at the start of `step()`. Parse the current state safely.
 
-## 2. THE REWARD FORMULA
-Implement a cumulative `reward` variable initialized to `0.0` at the start of each `step()`. Add/subtract based on these rules:
+**A. Combat Metrics (Calculated ONLY if `current_screen_type == "COMBAT"` AND `self.last_screen_type == "COMBAT"`):**
+- **Damage Dealt:** Calculate `monster_hp_delta = self.last_monster_total_hp - current_monster_total_hp`. 
+  - If `monster_hp_delta > 0`: `reward += monster_hp_delta * 0.1`
+- **Damage Taken:** Calculate `player_hp_delta = current_player_hp - self.last_player_hp`.
+  - If `player_hp_delta < 0` (Took damage): `reward += player_hp_delta * 0.2` (Penalty is 2x stronger than attack reward to force blocking).
+  - If `player_hp_delta > 0` (Healed, e.g., via Burning Blood or Potions): `reward += player_hp_delta * 0.1`
 
-**A. Combat Metrics (The Micro Loop):**
-- **Damage Dealt:** If the total HP of all living monsters decreases, reward the agent. 
-  - *Calculation:* You need a helper function `_get_total_monster_hp(game_state)` that sums `current_hp` of all monsters where `is_gone` is False.
-  - *Formula:* `reward += (self.last_monster_total_hp - current_monster_total_hp) * 0.1`
-  - *Safety:* Use `max(0, ...)` to ensure the bot isn't penalized if a monster heals or a new monster spawns.
-- **Damage Taken:** If the player's HP decreases, penalize the agent.
-  - *Formula:* `reward -= (self.last_player_hp - current_player_hp) * 0.2`
-  - *Note:* The penalty weight (0.2) is strictly higher than the attack weight (0.1) to strongly encourage the AI to use Block cards.
+**B. Macro-Economy Metrics (Calculated on ALL screens):**
+- **Floor Progress:** If `current_floor > self.last_floor`: `reward += 5.0`
+- **Gold Gained:** If `current_gold > self.last_gold`: `reward += (current_gold - self.last_gold) * 0.01` (e.g., gaining 100 gold = +1.0)
+- **Max HP Gained:** If `current_max_hp > self.last_max_hp`: `reward += 2.0`
 
-**B. Progression Metrics (The Macro Loop):**
-- **Floor Reached:** Climbing the spire is the main objective.
-  - *Formula:* If `current_floor > self.last_floor`: `reward += 5.0`
-- **Winning Combat:** Bonus for successfully finishing an encounter.
-  - *Detection:* If `screen_type` transitions from `"COMBAT"` to `"COMBAT_REWARD"`.
-  - *Formula:* `reward += 2.0`
-- **Death:** The ultimate failure.
-  - *Formula:* If `current_hp <= 0` or `screen_type == "GAME_OVER"` or `screen_type == "DEATH"`: `reward -= 20.0`
+**C. Milestones & Penalties:**
+- **Victory:** If `self.last_screen_type == "COMBAT"` and `current_screen_type == "COMBAT_REWARD"`: `reward += 2.0`
+- **Death:** If `current_player_hp <= 0` or `current_screen_type in ["GAME_OVER", "DEATH"]`: `reward -= 20.0`
 
 ## 3. IMPLEMENTATION DETAILS
-- Ensure the tracking variables (`self.last_player_hp`, etc.) are updated at the very END of the `step()` function so they are ready for the next iteration.
-- Log the calculated reward to `sys.stderr` occasionally (e.g., every 50 steps) so the Architect can monitor the dense signal.
+- Create a safe helper `_get_total_monster_hp(game_state)` that sums `current_hp` of all monsters where `is_gone == False`.
+- Update ALL tracking variables (`self.last_player_hp`, etc.) at the very END of the `step()` method to prepare for the next step.
+- Add a periodic log to `sys.stderr` every 100 steps to print the calculated reward, so the Architect can verify the dense signal.

@@ -42,28 +42,27 @@ def test_combat_encoding():
     
     encoder = StateEncoder()
     obs = encoder.encode(mock_state)
-    assert obs.shape == (101,), f"Expected shape (101,), got {obs.shape}"
+    assert obs.shape == (152,), f"Expected shape (152,), got {obs.shape}"
     
     # Global context
     assert obs[3] == 1.0, "Screen type COMBAT should be at index 3"
-    assert obs[7] == 1/50.0, "Floor should be 1/50"
-    assert obs[8] == 99/1000.0, "Gold should be 99/1000"
+    assert obs[7] == 1/55.0, "Floor should be 1/55"
+    assert abs(obs[8] - np.tanh(99/500.0)) < 0.01, "Gold should be tanh(99/500)"
     
     # Player Stats
-    assert obs[9] == 0.5, "Player HP should be 40/80 = 0.5"
-    assert abs(obs[10] - 0.666) < 0.01, "Player Energy should be 2/3 = 0.666"
+    assert obs[10] == 0.5, "Player HP should be 40/80 = 0.5"
+    assert abs(obs[11] - 0.666) < 0.01, "Player Energy should be 2/3 = 0.666"
     
     # Potions
-    assert obs[11] == 1.0, "Potion 0 Present"
-    assert obs[13] == 0.0, "Potion 1 Not Present"
+    assert obs[16] == 1/5.0, "Potions count"
     
     # Cards
-    assert obs[21] == 1.0, "Card 0 Present should be 1.0"
-    assert abs(obs[22] - 0.333) < 0.01, "Card 0 Cost should be 1/3 = 0.333"
+    assert obs[22] == 1.0, "Card 0 Present should be 1.0"
+    assert abs(obs[23] - 0.20) < 0.01, "Card 0 Cost should be 1/5 = 0.2"
     
     # Monsters
-    assert obs[81] == 1.0, "Monster 0 present"
-    assert obs[82] == 0.5, "Monster 0 HP should be 15/30 = 0.5"
+    assert obs[102] == 1.0, "Monster 0 present"
+    assert obs[103] == 0.5, "Monster 0 HP should be 15/30 = 0.5"
     
     # Test ActionMapper and Masker
     masker = ActionMasker()
@@ -97,20 +96,20 @@ def test_event_encoding():
     
     encoder = StateEncoder()
     obs = encoder.encode(mock_state)
-    assert obs.shape == (101,)
+    assert obs.shape == (152,)
     
     # Global context
     assert obs[0] == 1.0, "Screen type EVENT should be at index 0"
     assert obs[3] == 0.0, "COMBAT should be 0"
-    assert obs[7] == 4/50.0
-    assert obs[8] == 150/1000.0
+    assert obs[7] == 4/55.0
+    assert abs(obs[8] - np.tanh(150/500.0)) < 0.01
     
     # Player Stats
-    assert obs[9] == 75/80.0
-    assert obs[10] == 0.0, "Energy should be 0 out of combat"
+    assert obs[10] == 75/80.0
+    assert obs[11] == 0.0, "Energy should be 0 out of combat"
     
     # Combat features should be 0
-    assert np.all(obs[21:] == 0.0), "All cards and monsters should be 0 out of combat"
+    assert np.all(obs[22:] == 0.0), "All cards and monsters should be 0 out of combat"
     
     # Mask
     masker = ActionMasker()
