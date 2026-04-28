@@ -7,6 +7,7 @@ We communicate via stdin (receive JSON state) and stdout (send commands).
 
 import gymnasium as gym
 from gymnasium import spaces
+import math
 import numpy as np
 import sys
 from typing import Optional, Tuple, Dict, Any, List
@@ -14,6 +15,10 @@ from typing import Optional, Tuple, Dict, Any, List
 from process_manager import GameProcessManager
 from action_space import ActionMapper, ActionMasker
 from state_encoder import StateEncoder
+
+
+# ── V3.1 Constants ──
+COMBAT_SCALE = 50  # tanh normalization divisor for combat HP deltas
 
 
 class SlayTheSpireEnv(gym.Env):
@@ -37,9 +42,9 @@ class SlayTheSpireEnv(gym.Env):
 
         self.current_state: Dict[str, Any] = {}
 
-        # Reward tracking — V3
-        self.last_player_hp: int = 80
-        self.last_max_hp: int = 80
+        # Reward tracking — V3.1
+        self.last_player_hp: Optional[int] = None
+        self.last_max_hp: Optional[int] = None
         self.last_monster_total_hp: int = 0
         self.last_floor: int = 0
         self.last_screen_type: str = "NONE"
@@ -48,6 +53,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_upgraded_cards: int = 0
         self.step_count: int = 0
         self.combat_step_count: int = 0
+        self.last_act: int = 1
 
     def reset(
         self,
@@ -123,9 +129,9 @@ class SlayTheSpireEnv(gym.Env):
             print(f"Exception during reset: {e}", file=sys.stderr)
             raise
             
-        # Reset reward tracking — V3
-        self.last_player_hp = 80
-        self.last_max_hp = 80
+        # Reset reward tracking — V3.1
+        self.last_player_hp = None
+        self.last_max_hp = None
         self.last_monster_total_hp = 0
         self.last_floor = 0
         self.last_screen_type = "NONE"
@@ -134,6 +140,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_upgraded_cards = 0
         self.step_count = 0
         self.combat_step_count = 0
+        self.last_act = 1
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self.action_masker.get_mask(self.current_state)
@@ -174,7 +181,7 @@ class SlayTheSpireEnv(gym.Env):
         if not self.current_state.get("in_game", True):
             terminated = True
 
-        # Act 1 boundary
+        # Act boundary — terminate on transition, not every step
         if isinstance(game_state, dict):
             act = game_state.get("act", 1)
             if act > 1:
@@ -227,11 +234,11 @@ class SlayTheSpireEnv(gym.Env):
         return screen_type == "NONE" and "end" in available_cmds
 
     # ──────────────────────────────────────────────────────────────
-    # V3 REWARD FUNCTION
+    # V3.1 REWARD FUNCTION
     # ──────────────────────────────────────────────────────────────
 
     def _calculate_reward(self) -> float:
-        """V3 reward: bounded components, defense parity, terminal dominance."""
+        """V3.1 reward: tanh-bounded combat, robust HP, one-shot terminal."""
         if not self.current_state:
             return 0.0
 
@@ -243,36 +250,52 @@ class SlayTheSpireEnv(gym.Env):
 
         # ── Extract current values safely ──
         screen_type = game_state.get("screen_type", "NONE")
-        current_hp = game_state.get("current_hp", 0)
-        current_max_hp = game_state.get("max_hp", 80)
         current_floor = game_state.get("floor", 0)
         current_monster_hp = self._get_total_monster_hp(game_state)
         current_relic_count = len(game_state.get("relics", []))
         current_deck_size = len(game_state.get("deck", []))
         current_upgraded_cards = self._count_upgraded_cards(game_state)
 
-        # Fallback: read HP from combat_state.player if game_state lacks it
-        combat_state = game_state.get("combat_state", {})
-        if combat_state:
-            player = combat_state.get("player", {})
-            if current_hp == 0:
-                current_hp = player.get("current_hp", 0)
-            if current_max_hp == 80:
-                current_max_hp = player.get("max_hp", current_max_hp)
+        # ── Robust HP extraction (v3.1) ──
+        # Priority: combat_state.player > game_state > last known
+        current_hp = self.last_player_hp        # default to last known
+        current_max_hp = self.last_max_hp        # default to last known
 
         in_combat = self._is_in_combat(self.current_state)
+        combat_state = game_state.get("combat_state", {})
+
+        if in_combat and combat_state:
+            # In combat — combat_state.player is the authoritative source
+            player_data = combat_state.get("player", {})
+            current_hp = player_data.get("current_hp", current_hp)
+            current_max_hp = player_data.get("max_hp", current_max_hp)
+        else:
+            # Outside combat — use game_state top-level fields
+            gs_hp = game_state.get("current_hp")
+            gs_max = game_state.get("max_hp")
+            if gs_hp is not None:
+                current_hp = gs_hp
+            if gs_max is not None:
+                current_max_hp = gs_max
+
+        # First-step bootstrap: if we still have None, seed from whatever we got
+        if current_hp is None:
+            current_hp = game_state.get("current_hp", 0)
+        if current_max_hp is None:
+            current_max_hp = game_state.get("max_hp", 80)
 
         # ══════════════════════════════════════════
         # A. COMBAT REWARDS
         # ══════════════════════════════════════════
         if in_combat:
-            # A1. Damage dealt — normalized to /100
+            # A1. Damage dealt — tanh-bounded [0, 1)
             dmg_dealt = max(0, self.last_monster_total_hp - current_monster_hp)
-            reward += dmg_dealt / 100.0
+            reward += math.tanh(dmg_dealt / COMBAT_SCALE)
 
-            # A2. Damage taken — same /100 scale (defense parity)
-            hp_lost = max(0, self.last_player_hp - current_hp)
-            reward -= hp_lost / 100.0
+            # A2. Damage taken — tanh-bounded (symmetric with A1)
+            if self.last_player_hp is not None:
+                hp_lost = max(0, self.last_player_hp - current_hp)
+                reward -= math.tanh(hp_lost / COMBAT_SCALE)
 
             # A3. Anti-stall — only penalize after 40 combat steps
             self.combat_step_count += 1
@@ -305,9 +328,10 @@ class SlayTheSpireEnv(gym.Env):
             reward += 0.5
 
         # B6. Healing (outside combat only)
-        hp_gained = max(0, current_hp - self.last_player_hp)
-        if hp_gained > 0 and not in_combat:
-            reward += hp_gained / 100.0
+        if self.last_player_hp is not None:
+            hp_gained = max(0, current_hp - self.last_player_hp)
+            if hp_gained > 0 and not in_combat:
+                reward += hp_gained / 100.0
 
         # ══════════════════════════════════════════
         # C. TERMINAL STATES
@@ -317,9 +341,9 @@ class SlayTheSpireEnv(gym.Env):
         if current_hp <= 0 or screen_type in ["GAME_OVER", "DEATH"]:
             reward -= 20.0
 
-        # C2. Act completion (Act 1 victory)
+        # C2. Act completion — ONE-SHOT (v3.1 fix: fires exactly once per act transition)
         current_act = game_state.get("act", 1)
-        if current_act > 1 and screen_type not in ["GAME_OVER", "DEATH"]:
+        if current_act > self.last_act and screen_type not in ["GAME_OVER", "DEATH"]:
             reward += 10.0
 
         # Reset combat counter when leaving combat
@@ -337,12 +361,13 @@ class SlayTheSpireEnv(gym.Env):
         self.last_relic_count = current_relic_count
         self.last_deck_size = current_deck_size
         self.last_upgraded_cards = current_upgraded_cards
+        self.last_act = current_act
 
         # Periodic logging
         self.step_count += 1
         if self.step_count % 50 == 0:
             print(
-                f"[REWARD V3 #{self.step_count}] r={reward:.3f} | "
+                f"[REWARD V3.1 #{self.step_count}] r={reward:.3f} | "
                 f"hp={current_hp}/{current_max_hp} floor={current_floor} "
                 f"screen={screen_type} combat_steps={self.combat_step_count}",
                 file=sys.stderr,

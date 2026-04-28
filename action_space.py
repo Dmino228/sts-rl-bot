@@ -166,6 +166,20 @@ class ActionMasker:
                 # Block CONFIRM until a card is selected
                 mask[66] = 0
 
+        # Strict COMBAT_REWARD Logic (Potion Loop Bug Fix)
+        # Prevent picking up potions when inventory is full
+        if screen_type == "COMBAT_REWARD":
+            potions = game_state.get("potions", [])
+            has_empty_slot = any(p.get("id") == "Potion Slot" for p in potions)
+            
+            if not has_empty_slot:
+                screen_state = game_state.get("screen_state", {})
+                rewards = screen_state.get("rewards", [])
+                for i, r in enumerate(rewards):
+                    if r.get("reward_type") == "POTION":
+                        if 68 + i < self.action_space_size:
+                            mask[68 + i] = 0
+
         if not game_state:
             return mask
 
