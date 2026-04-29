@@ -7,3 +7,4 @@ ppo_sts_tensorboard
 logs
 *SlayTheSpire.log
 *communication_mod_errors.log
+config.properties*
