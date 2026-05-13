@@ -125,6 +125,23 @@ def _bounded_hp_reward(delta):
     return clipped / HP_DELTA_SCALE
 
 
+def _initial_reward_tracking():
+    return (
+        None,    # last_hp
+        None,    # last_max_hp
+        None,    # last_monster_hp
+        0,       # last_floor
+        "NONE",  # last_screen
+        1,       # last_act
+        None,    # last_relic_ids
+        None,    # last_deck
+        None,    # last_upgrades
+        False,   # last_in_combat
+        0,       # combat_steps
+        None,    # last_fp
+    )
+
+
 def _is_in_combat(state):
     st = state.get("game_state", {}).get("screen_type", "NONE")
     return st == "NONE" and "end" in state.get("available_commands", [])
@@ -220,21 +237,23 @@ def main():
     _cprint(con, "  Rewards are calculated automatically.")
     _cprint(con, "=========================================")
 
-    # V3.2 tracking
-    last_hp = None
-    last_max_hp = None
-    last_monster_hp = None
-    last_floor = 0
-    last_screen = "NONE"
-    last_act = 1
-    last_relic_ids = None
-    last_deck = None
-    last_upgrades = None
-    last_in_combat = False
-    combat_steps = 0
+    (
+        last_hp,
+        last_max_hp,
+        last_monster_hp,
+        last_floor,
+        last_screen,
+        last_act,
+        last_relic_ids,
+        last_deck,
+        last_upgrades,
+        last_in_combat,
+        combat_steps,
+        last_fp,
+    ) = _initial_reward_tracking()
+    terminal_seen = False
     step = 0
     total_r = 0.0
-    last_fp = None
 
     try:
         while True:
@@ -248,9 +267,48 @@ def main():
                 gs = {}
 
             in_game = state.get("in_game", False)
+            screen = gs.get("screen_type", "NONE")
+            floor = gs.get("floor", 0)
 
-            # Pre-game: throttle wait (1s) to avoid STATE spam. Once we have
-            # tracked a run, process not-in-game states so terminal death is logged.
+            if terminal_seen:
+                if not in_game or screen in ["GAME_OVER", "DEATH"]:
+                    (
+                        last_hp,
+                        last_max_hp,
+                        last_monster_hp,
+                        last_floor,
+                        last_screen,
+                        last_act,
+                        last_relic_ids,
+                        last_deck,
+                        last_upgrades,
+                        last_in_combat,
+                        combat_steps,
+                        last_fp,
+                    ) = _initial_reward_tracking()
+                    _cprint(con, f"[Post-run] cmds={state.get('available_commands',[])}")
+                    time.sleep(1.0)
+                    _send_command("STATE")
+                    continue
+
+                # A new in-game, non-terminal run started. Bootstrap it cleanly.
+                (
+                    last_hp,
+                    last_max_hp,
+                    last_monster_hp,
+                    last_floor,
+                    last_screen,
+                    last_act,
+                    last_relic_ids,
+                    last_deck,
+                    last_upgrades,
+                    last_in_combat,
+                    combat_steps,
+                    last_fp,
+                ) = _initial_reward_tracking()
+                terminal_seen = False
+
+            # Pre-game: throttle wait (1s) to avoid STATE spam.
             if not in_game and last_fp is None:
                 _cprint(con, f"[Pre-game] cmds={state.get('available_commands',[])}")
                 time.sleep(1.0)
@@ -258,8 +316,6 @@ def main():
                 continue
 
             # ── Extract state ──
-            screen = gs.get("screen_type", "NONE")
-            floor = gs.get("floor", 0)
             monster_hp = _get_total_monster_hp(gs)
             relic_ids = _get_relic_ids(gs)
             deck = len(gs.get("deck", []))
@@ -326,45 +382,48 @@ def main():
                     parts.append("stall")
 
             # B. Macro
-            if floor > last_floor:
-                fr = FLOOR_REWARD * (floor - last_floor)
-                reward += fr
-                parts.append(f"floor:{fr:+.1f}")
+            if in_game and screen not in ["GAME_OVER", "DEATH"]:
+                if floor > last_floor:
+                    fr = FLOOR_REWARD * (floor - last_floor)
+                    reward += fr
+                    parts.append(f"floor:{fr:+.1f}")
 
-            if screen == "COMBAT_REWARD" and last_screen != "COMBAT_REWARD":
-                reward += COMBAT_VICTORY_REWARD
-                combat_steps = 0
-                parts.append(f"victory:{COMBAT_VICTORY_REWARD:+.1f}")
+                if screen == "COMBAT_REWARD" and last_screen != "COMBAT_REWARD":
+                    reward += COMBAT_VICTORY_REWARD
+                    combat_steps = 0
+                    parts.append(f"victory:{COMBAT_VICTORY_REWARD:+.1f}")
 
-            if last_relic_ids is not None:
-                relic_delta = len(relic_ids - last_relic_ids)
-                if relic_delta:
-                    rr = RELIC_REWARD * relic_delta
-                    reward += rr
-                    parts.append(f"relic:{rr:+.1f}")
+                if last_relic_ids is not None:
+                    relic_delta = len(relic_ids - last_relic_ids)
+                    if relic_delta:
+                        rr = RELIC_REWARD * relic_delta
+                        reward += rr
+                        parts.append(f"relic:{rr:+.1f}")
 
-            if last_upgrades is not None:
-                upgrade_delta = max(0, upgrades - last_upgrades)
-                if upgrade_delta:
-                    ur = CARD_UPGRADE_REWARD * upgrade_delta
-                    reward += ur
-                    parts.append(f"upgrade:{ur:+.1f}")
+                if last_upgrades is not None:
+                    upgrade_delta = max(0, upgrades - last_upgrades)
+                    if upgrade_delta:
+                        ur = CARD_UPGRADE_REWARD * upgrade_delta
+                        reward += ur
+                        parts.append(f"upgrade:{ur:+.1f}")
 
-            if last_deck is not None and not in_combat:
-                removed = max(0, last_deck - deck)
-                if removed:
-                    cr = CARD_REMOVE_REWARD * removed
-                    reward += cr
-                    parts.append(f"removed:{cr:+.1f}")
+                if last_deck is not None and not in_combat:
+                    removed = max(0, last_deck - deck)
+                    if removed:
+                        cr = CARD_REMOVE_REWARD * removed
+                        reward += cr
+                        parts.append(f"removed:{cr:+.1f}")
 
             # C. Terminal
             act_completed = act > last_act
             not_in_game = not state.get("in_game", True)
             dead_screen = screen in ["GAME_OVER", "DEATH"]
             dead_by_hp = hp_is_known and hp <= 0
-            if dead_by_hp or dead_screen or (not_in_game and not act_completed):
+            terminal_failure = dead_by_hp or dead_screen or (not_in_game and not act_completed)
+            if terminal_failure:
                 reward += DEATH_PENALTY
                 parts.append(f"DEATH:{DEATH_PENALTY:+.0f}")
+                terminal_seen = True
 
             if act > last_act and screen not in ["GAME_OVER", "DEATH"]:
                 reward += ACT_COMPLETION_REWARD

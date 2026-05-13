@@ -67,6 +67,7 @@ class SlayTheSpireEnv(gym.Env):
         self.combat_step_count: int = 0
         self.last_act: int = 1
         self.last_in_combat: bool = False
+        self.terminal_reward_given: bool = False
 
     def reset(
         self,
@@ -155,6 +156,7 @@ class SlayTheSpireEnv(gym.Env):
         self.combat_step_count = 0
         self.last_act = 1
         self.last_in_combat = False
+        self.terminal_reward_given = False
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self.action_masker.get_mask(self.current_state)
@@ -278,6 +280,7 @@ class SlayTheSpireEnv(gym.Env):
 
         # ── Extract current values safely ──
         screen_type = game_state.get("screen_type", "NONE")
+        state_in_game = self.current_state.get("in_game", True)
         current_floor = game_state.get("floor", 0)
         current_monster_hp = self._get_total_monster_hp(game_state)
         current_relic_ids = self._get_relic_ids(game_state)
@@ -336,28 +339,29 @@ class SlayTheSpireEnv(gym.Env):
         # B. MACRO-ECONOMY
         # ══════════════════════════════════════════
 
-        # B1. Floor progress — primary signal
-        if current_floor > self.last_floor:
-            reward += FLOOR_REWARD * (current_floor - self.last_floor)
+        if state_in_game and screen_type not in ["GAME_OVER", "DEATH"]:
+            # B1. Floor progress — primary signal
+            if current_floor > self.last_floor:
+                reward += FLOOR_REWARD * (current_floor - self.last_floor)
 
-        # B2. Combat victory (screen transition guard)
-        if screen_type == "COMBAT_REWARD" and self.last_screen_type != "COMBAT_REWARD":
-            reward += COMBAT_VICTORY_REWARD
-            self.combat_step_count = 0
+            # B2. Combat victory (screen transition guard)
+            if screen_type == "COMBAT_REWARD" and self.last_screen_type != "COMBAT_REWARD":
+                reward += COMBAT_VICTORY_REWARD
+                self.combat_step_count = 0
 
-        # B3. Relics acquired, tracked by ID so swaps are not missed
-        if self.last_relic_ids is not None:
-            reward += RELIC_REWARD * len(current_relic_ids - self.last_relic_ids)
+            # B3. Relics acquired, tracked by ID so swaps are not missed
+            if self.last_relic_ids is not None:
+                reward += RELIC_REWARD * len(current_relic_ids - self.last_relic_ids)
 
-        # B4. Card upgraded
-        if self.last_upgraded_cards is not None:
-            upgrade_delta = max(0, current_upgraded_cards - self.last_upgraded_cards)
-            reward += CARD_UPGRADE_REWARD * upgrade_delta
+            # B4. Card upgraded
+            if self.last_upgraded_cards is not None:
+                upgrade_delta = max(0, current_upgraded_cards - self.last_upgraded_cards)
+                reward += CARD_UPGRADE_REWARD * upgrade_delta
 
-        # B5. Card removed (outside combat only — filters exhaust noise)
-        if self.last_deck_size is not None and not in_combat:
-            removed = max(0, self.last_deck_size - current_deck_size)
-            reward += CARD_REMOVE_REWARD * removed
+            # B5. Card removed (outside combat only — filters exhaust noise)
+            if self.last_deck_size is not None and not in_combat:
+                removed = max(0, self.last_deck_size - current_deck_size)
+                reward += CARD_REMOVE_REWARD * removed
 
         # ══════════════════════════════════════════
         # C. TERMINAL STATES
@@ -365,15 +369,22 @@ class SlayTheSpireEnv(gym.Env):
 
         # C1. Death — include terminal no-longer-in-game states.
         act_completed = current_act > self.last_act
-        not_in_game = not self.current_state.get("in_game", True)
+        not_in_game = not state_in_game
         dead_screen = screen_type in ["GAME_OVER", "DEATH"]
         dead_by_hp = hp_is_known and current_hp <= 0
-        if dead_by_hp or dead_screen or (not_in_game and not act_completed):
+        terminal_failure = dead_by_hp or dead_screen or (not_in_game and not act_completed)
+        if terminal_failure and not self.terminal_reward_given:
             reward += DEATH_PENALTY
+            self.terminal_reward_given = True
 
         # C2. Act completion — one-shot act transition bonus.
-        if current_act > self.last_act and screen_type not in ["GAME_OVER", "DEATH"]:
+        if (
+            current_act > self.last_act
+            and screen_type not in ["GAME_OVER", "DEATH"]
+            and not self.terminal_reward_given
+        ):
             reward += ACT_COMPLETION_REWARD
+            self.terminal_reward_given = True
 
         # Reset combat counter when leaving combat
         if not in_combat and self.last_screen_type == "NONE":

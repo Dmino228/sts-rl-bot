@@ -100,6 +100,19 @@ Notes:
 
 ## Reward Formula V3.2
 
+Before scoring macro rewards, determine whether the current state still belongs
+to the active run:
+
+```python
+state_in_game = self.current_state.get("in_game", True)
+terminal_screen = screen_type in ["GAME_OVER", "DEATH"]
+score_macro = state_in_game and not terminal_screen
+```
+
+Macro deltas such as deck size, relic IDs, and floor should not be scored on
+post-run/menu states. Otherwise a post-death empty state can look like massive
+card removal.
+
 ### A. Monster HP Progress
 
 Only score monster HP deltas after combat has already been bootstrapped. Also
@@ -227,8 +240,11 @@ act_completed = current_act > self.last_act
 not_in_game = not self.current_state.get("in_game", True)
 dead_screen = screen_type in ["GAME_OVER", "DEATH"]
 
-if (current_hp <= 0 or dead_screen or (not_in_game and not act_completed)):
+terminal_failure = current_hp <= 0 or dead_screen or (not_in_game and not act_completed)
+
+if terminal_failure and not self.terminal_reward_given:
     reward += DEATH_PENALTY
+    self.terminal_reward_given = True
 ```
 
 Why this changes V3.1:
@@ -238,6 +254,8 @@ Why this changes V3.1:
   act did not advance.
 - Otherwise some deaths can return `0.0` terminal reward if the final JSON no
   longer has a death screen.
+- The terminal reward must be one-shot. Repeated post-death cleanup/menu states
+  should not apply death again.
 
 ### J. Act Completion
 
@@ -293,5 +311,7 @@ entry, and death floor distribution.
 6. Multiply floor, upgrade, removal, and relic rewards by real deltas.
 7. Raise action-step anti-stall grace to 80, or switch to turn-based tracking if
    the JSON exposes a reliable turn counter.
-8. Update reward logs from `V3.1` to `V3.2` and include component breakdowns for
+8. Add a one-shot terminal guard such as `terminal_reward_given`.
+9. Score macro deltas only while `in_game == True` and not on terminal screens.
+10. Update reward logs from `V3.1` to `V3.2` and include component breakdowns for
    the first validation run.
