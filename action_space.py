@@ -198,6 +198,53 @@ class ActionMasker:
                         if 68 + i < self.action_space_size:
                             mask[68 + i] = 0
 
+        # Strict SHOP_SCREEN Logic (Potion Purchase Deadlock Fix)
+        # CommunicationMod known issue: "There is no feedback or state change
+        # if you attempt to take or buy a potion while your potion inventory
+        # is full."  This causes read_state() to block forever (deadlock).
+        # Fix: mask out potion choices in the shop when slots are full.
+        # Also mask items the player cannot afford to prevent wasted actions.
+        if screen_type == "SHOP_SCREEN":
+            potions_inventory = game_state.get("potions", [])
+            has_empty_slot = any(
+                p.get("id") == "Potion Slot" for p in potions_inventory
+            )
+            player_gold = game_state.get("gold", 0)
+            screen_state = game_state.get("screen_state", {})
+
+            # Build a unified choice list matching CommunicationMod's CHOOSE
+            # indices: cards first, then relics, then potions, then purge.
+            shop_cards = screen_state.get("cards", [])
+            shop_relics = screen_state.get("relics", [])
+            shop_potions = screen_state.get("potions", [])
+            purge_available = screen_state.get("purge_available", False)
+            purge_cost = screen_state.get("purge_cost", 0)
+
+            # choice index offset: cards → relics → potions → purge
+            idx = 0
+            for card in shop_cards:
+                price = card.get("price", 0)
+                if price > player_gold:
+                    if 68 + idx < self.action_space_size:
+                        mask[68 + idx] = 0
+                idx += 1
+            for relic in shop_relics:
+                price = relic.get("price", 0)
+                if price > player_gold:
+                    if 68 + idx < self.action_space_size:
+                        mask[68 + idx] = 0
+                idx += 1
+            for potion in shop_potions:
+                price = potion.get("price", 0)
+                if not has_empty_slot or price > player_gold:
+                    if 68 + idx < self.action_space_size:
+                        mask[68 + idx] = 0
+                idx += 1
+            if purge_available:
+                if purge_cost > player_gold:
+                    if 68 + idx < self.action_space_size:
+                        mask[68 + idx] = 0
+
         if not game_state:
             self._ensure_nonempty_mask(mask, available_cmds)
             return mask
