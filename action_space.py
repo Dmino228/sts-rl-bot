@@ -90,6 +90,19 @@ class ActionMasker:
             
         return 0
 
+    def _ensure_nonempty_mask(
+        self,
+        mask: np.ndarray,
+        available_cmds: List[str],
+    ) -> None:
+        """Avoid all-zero masks; MaskablePPO cannot sample from them."""
+        if np.any(mask):
+            return
+        if "state" in available_cmds:
+            mask[98] = 1
+        elif "wait" in available_cmds:
+            mask[99] = 1
+
     def get_mask(self, state: Dict[str, Any]) -> np.ndarray:
         mask = np.zeros(self.action_space_size, dtype=np.int8)
 
@@ -120,6 +133,11 @@ class ActionMasker:
             
             for i in range(min(num_choices, 30)):
                 mask[68 + i] = 1
+
+        # On the path map, RETURN goes back to the previous room/reward screen.
+        # During training this can create choose->return loops instead of progress.
+        if screen_type == "MAP" and "choose" in available_cmds:
+            mask[67] = 0
                 
         # Strict GRID Screen Logic Override
         # Logs prove: CommunicationMod DOES provide "choose" on GRID screens.
@@ -181,6 +199,7 @@ class ActionMasker:
                             mask[68 + i] = 0
 
         if not game_state:
+            self._ensure_nonempty_mask(mask, available_cmds)
             return mask
 
         # Combat specific logic
@@ -239,4 +258,5 @@ class ActionMasker:
                     else:
                         mask[i] = 1
 
+        self._ensure_nonempty_mask(mask, available_cmds)
         return mask

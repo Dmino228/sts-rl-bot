@@ -13,8 +13,8 @@ V3.2 fixes the remaining reward-shaping risks:
 2. Positive-only monster HP deltas can be farmed when enemies heal, revive, or
    summon, because HP increases are ignored instead of becoming negative
    progress.
-3. Death can be missed when `in_game == False` but the state no longer exposes a
-   `GAME_OVER` or `DEATH` screen type.
+3. Terminal handling must be one-shot and should not confuse post-run or Act 3
+   victory states with death.
 4. Relic, upgrade, and removal rewards should use real deltas instead of a
    single fixed reward when several things change at once.
 5. The anti-stall counter is currently action-step based, not turn based. A
@@ -236,11 +236,10 @@ state encoder and policy are strong enough for card-specific evaluation.
 ### I. Death
 
 ```python
-act_completed = current_act > self.last_act
-not_in_game = not self.current_state.get("in_game", True)
 dead_screen = screen_type in ["GAME_OVER", "DEATH"]
+dead_by_hp = hp_is_known and current_hp <= 0
 
-terminal_failure = current_hp <= 0 or dead_screen or (not_in_game and not act_completed)
+terminal_failure = dead_by_hp or dead_screen
 
 if terminal_failure and not self.terminal_reward_given:
     reward += DEATH_PENALTY
@@ -249,13 +248,12 @@ if terminal_failure and not self.terminal_reward_given:
 
 Why this changes V3.1:
 
-- `step()` already terminates on `in_game == False`.
-- `_calculate_reward()` should also know that this is terminal failure when the
-  act did not advance.
-- Otherwise some deaths can return `0.0` terminal reward if the final JSON no
-  longer has a death screen.
+- Death should be detected from explicit death screens or known `current_hp <= 0`.
 - The terminal reward must be one-shot. Repeated post-death cleanup/menu states
   should not apply death again.
+- Do not treat every `not_in_game` state as death. A successful Act 3 ending
+  without all three keys may leave the run without exposing a death screen, and
+  should not receive `DEATH_PENALTY` when HP is still positive.
 
 ### J. Act Completion
 
@@ -319,7 +317,8 @@ entry, and death floor distribution.
 3. Score monster HP deltas with signed progress, not `max(0, delta)`.
 4. Replace separate damage-taken and healing components with one player HP delta
    channel.
-5. Add `in_game == False` to death detection, guarded by `act_completed`.
+5. Detect death from explicit death screens or known `current_hp <= 0`; do not
+   penalize every `not_in_game` state.
 6. Multiply floor, upgrade, removal, and relic rewards by real deltas.
 7. Raise action-step anti-stall grace to 80, or switch to turn-based tracking if
    the JSON exposes a reliable turn counter.

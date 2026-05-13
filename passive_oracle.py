@@ -415,11 +415,9 @@ def main():
                         parts.append(f"removed:{cr:+.1f}")
 
             # C. Terminal
-            act_completed = act > last_act
-            not_in_game = not state.get("in_game", True)
             dead_screen = screen in ["GAME_OVER", "DEATH"]
             dead_by_hp = hp_is_known and hp <= 0
-            terminal_failure = dead_by_hp or dead_screen or (not_in_game and not act_completed)
+            terminal_failure = dead_by_hp or dead_screen
             if terminal_failure:
                 reward += DEATH_PENALTY
                 parts.append(f"DEATH:{DEATH_PENALTY:+.0f}")

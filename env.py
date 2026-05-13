@@ -466,11 +466,9 @@ class SlayTheSpireEnv(gym.Env):
         # ══════════════════════════════════════════
 
         # C1. Death — include terminal no-longer-in-game states.
-        act_completed = current_act > self.last_act
-        not_in_game = not state_in_game
         dead_screen = screen_type in ["GAME_OVER", "DEATH"]
         dead_by_hp = hp_is_known and current_hp <= 0
-        terminal_failure = dead_by_hp or dead_screen or (not_in_game and not act_completed)
+        terminal_failure = dead_by_hp or dead_screen
         if terminal_failure and not self.terminal_reward_given:
             reward += DEATH_PENALTY
             self.terminal_reward_given = True
