@@ -9,3 +9,5 @@ logs
 *communication_mod_errors.log
 config.properties*
 SlayTheSpire
+sts_env_*.zip
+pyrightconfig.json

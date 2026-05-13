@@ -33,17 +33,44 @@ COMBAT_STEP_GRACE = 80
 ANTI_STALL_PENALTY = -0.02
 
 
+# Valid CommunicationMod character identifiers
+VALID_CHARACTERS = {"IRONCLAD", "SILENT", "DEFECT", "WATCHER"}
+
+
 class SlayTheSpireEnv(gym.Env):
     """
-    Phase 1 MVP Gymnasium Environment for Slay the Spire.
-    CommunicationMod launches this script. We read game state from stdin,
-    send plain-text commands to stdout.
+    Gymnasium Environment for Slay the Spire via CommunicationMod.
+
+    Supports:
+    - Multi-character generalization via `character_class`.
+    - Directory-isolated parallel workers via `worker_dir`.
+    - Headless xvfb launching via `use_xvfb`.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        character_class: str = "IRONCLAD",
+        worker_dir: Optional[str] = None,
+        use_xvfb: bool = False,
+    ) -> None:
         super().__init__()
 
-        self.process_manager = GameProcessManager(timeout=120.0)
+        # Validate character
+        self.character_class = character_class.upper()
+        if self.character_class not in VALID_CHARACTERS:
+            raise ValueError(
+                f"Invalid character_class '{character_class}'. "
+                f"Must be one of {VALID_CHARACTERS}"
+            )
+
+        self.worker_dir = worker_dir
+        self.use_xvfb = use_xvfb
+
+        self.process_manager = GameProcessManager(
+            timeout=120.0,
+            worker_dir=worker_dir,
+            use_xvfb=use_xvfb,
+        )
 
         self.action_mapper = ActionMapper()
         self.action_masker = ActionMasker()
@@ -68,6 +95,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_act: int = 1
         self.last_in_combat: bool = False
         self.terminal_reward_given: bool = False
+        self.episode_ended_by_act_completion: bool = False
 
     def reset(
         self,
@@ -86,6 +114,21 @@ class SlayTheSpireEnv(gym.Env):
             if not self.current_state:
                 self.current_state = self.process_manager.read_state()
 
+            game_state = self.current_state.get("game_state", {})
+            if self._can_soft_reset_at_act_boundary(game_state):
+                act = game_state.get("act", 1)
+                floor = game_state.get("floor", 0)
+                screen = game_state.get("screen_type", "NONE")
+                print(
+                    f"Soft reset at act boundary: act={act}, "
+                    f"floor={floor}, screen={screen}.",
+                    file=sys.stderr,
+                )
+                self._reset_reward_tracking(bootstrap_current=True)
+                obs = self.state_encoder.encode(self.current_state)
+                mask = self.action_masker.get_mask(self.current_state)
+                return obs, {"raw_state": self.current_state, "action_mask": mask}
+
             # Cleanup Loop: navigate through Game Over / Victory / Score screens
             # back to Main Menu where "start" is available.
             max_cleanup_steps = 30
@@ -100,8 +143,12 @@ class SlayTheSpireEnv(gym.Env):
                 )
 
                 if not in_game and "start" in available_cmds:
-                    print("At main menu. Sending START ironclad...", file=sys.stderr)
-                    self.process_manager.send_command("START ironclad")
+                    char_lower = self.character_class.lower()
+                    print(
+                        f"At main menu. Sending START {char_lower}...",
+                        file=sys.stderr,
+                    )
+                    self.process_manager.send_command(f"START {char_lower}")
                     break
                 elif "proceed" in available_cmds:
                     self.process_manager.send_command("PROCEED")
@@ -143,20 +190,7 @@ class SlayTheSpireEnv(gym.Env):
             print(f"Exception during reset: {e}", file=sys.stderr)
             raise
             
-        # Reset reward tracking - V3.2
-        self.last_player_hp = None
-        self.last_max_hp = None
-        self.last_monster_total_hp = None
-        self.last_floor = 0
-        self.last_screen_type = "NONE"
-        self.last_relic_ids = None
-        self.last_deck_size = None
-        self.last_upgraded_cards = None
-        self.step_count = 0
-        self.combat_step_count = 0
-        self.last_act = 1
-        self.last_in_combat = False
-        self.terminal_reward_given = False
+        self._reset_reward_tracking(bootstrap_current=False)
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self.action_masker.get_mask(self.current_state)
@@ -180,9 +214,9 @@ class SlayTheSpireEnv(gym.Env):
             self.current_state = self.process_manager.read_state()
         except Exception as e:
             print(f"Exception during step: {e}", file=sys.stderr)
-            mask = np.zeros(self.action_space.n, dtype=np.int8)
+            mask = np.zeros(self.action_mapper.action_space_size, dtype=np.int8)
             return (
-                np.zeros(self.observation_space.shape, dtype=np.float32),
+                np.zeros(self.state_encoder.shape, dtype=np.float32),
                 0.0,
                 True,
                 False,
@@ -197,11 +231,13 @@ class SlayTheSpireEnv(gym.Env):
         if not self.current_state.get("in_game", True):
             terminated = True
 
-        # Act boundary — terminate on transition, not every step
+        # Act boundary — terminate only on the transition. reset() will soft-start
+        # the next episode from the new act instead of trying to return to menu.
         if isinstance(game_state, dict):
             act = game_state.get("act", 1)
-            if act > 1:
+            if act > self.last_act:
                 terminated = True
+                self.episode_ended_by_act_completion = True
 
         obs = self.state_encoder.encode(self.current_state)
         reward = self._calculate_reward()
@@ -221,6 +257,68 @@ class SlayTheSpireEnv(gym.Env):
     def get_action_mask(self) -> np.ndarray:
         """Returns the binary mask of valid actions for sb3-contrib ActionMasker."""
         return self.action_masker.get_mask(self.current_state)
+
+    def _can_soft_reset_at_act_boundary(self, game_state: Dict[str, Any]) -> bool:
+        """Return True when reset() should continue from a completed act."""
+        if not isinstance(game_state, dict):
+            return False
+        if not self.current_state.get("in_game", False):
+            return False
+
+        screen_type = game_state.get("screen_type", "NONE")
+        if screen_type in ["GAME_OVER", "DEATH"]:
+            return False
+
+        current_act = game_state.get("act", 1)
+        return self.episode_ended_by_act_completion or current_act > 1
+
+    def _reset_reward_tracking(self, bootstrap_current: bool = False) -> None:
+        """Reset reward deltas, optionally seeding them from current_state."""
+        self.last_player_hp = None
+        self.last_max_hp = None
+        self.last_monster_total_hp = None
+        self.last_floor = 0
+        self.last_screen_type = "NONE"
+        self.last_relic_ids = None
+        self.last_deck_size = None
+        self.last_upgraded_cards = None
+        self.step_count = 0
+        self.combat_step_count = 0
+        self.last_act = 1
+        self.last_in_combat = False
+        self.terminal_reward_given = False
+        self.episode_ended_by_act_completion = False
+
+        if not bootstrap_current or not self.current_state:
+            return
+
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            return
+
+        in_combat = self._is_in_combat(self.current_state)
+        combat_state = game_state.get("combat_state", {})
+
+        current_hp = None
+        current_max_hp = None
+        if in_combat and combat_state:
+            player_data = combat_state.get("player", {})
+            current_hp = player_data.get("current_hp")
+            current_max_hp = player_data.get("max_hp")
+        else:
+            current_hp = game_state.get("current_hp")
+            current_max_hp = game_state.get("max_hp")
+
+        self.last_player_hp = current_hp
+        self.last_max_hp = current_max_hp
+        self.last_monster_total_hp = self._get_total_monster_hp(game_state)
+        self.last_floor = game_state.get("floor", 0)
+        self.last_screen_type = game_state.get("screen_type", "NONE")
+        self.last_relic_ids = self._get_relic_ids(game_state)
+        self.last_deck_size = len(game_state.get("deck", []))
+        self.last_upgraded_cards = self._count_upgraded_cards(game_state)
+        self.last_act = game_state.get("act", 1)
+        self.last_in_combat = in_combat
 
     # ──────────────────────────────────────────────────────────────
     # V3 REWARD HELPERS

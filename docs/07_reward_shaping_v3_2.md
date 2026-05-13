@@ -268,6 +268,18 @@ This is still one-shot, but stronger than V3.1. For Act-1-only training, beating
 the Act 1 boss is the current task victory condition, so it should be visibly
 stronger than any single macro event.
 
+Reset handling:
+
+- `step()` should terminate on an act transition, not on every state where
+  `act > 1`.
+- `reset()` should not try to navigate from the Act 2 map back to the main menu.
+  CommunicationMod has no direct `ABANDON` command, and `START` is only valid
+  from the main menu.
+- When `reset()` is called while already inside a non-terminal run after an act
+  transition, perform a soft reset: keep the current game state, bootstrap
+  reward tracking from that state, and return it as the first observation of the
+  next episode.
+
 ---
 
 ## Updated Reward Budget
