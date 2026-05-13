@@ -7,7 +7,6 @@ We communicate via stdin (receive JSON state) and stdout (send commands).
 
 import gymnasium as gym
 from gymnasium import spaces
-import math
 import numpy as np
 import sys
 from typing import Optional, Tuple, Dict, Any, List
@@ -17,8 +16,21 @@ from action_space import ActionMapper, ActionMasker
 from state_encoder import StateEncoder
 
 
-# ── V3.1 Constants ──
-COMBAT_SCALE = 50  # tanh normalization divisor for combat HP deltas
+# V3.2 reward constants
+HP_DELTA_SCALE = 100.0
+HP_DELTA_CAP = 100
+
+FLOOR_REWARD = 3.0
+COMBAT_VICTORY_REWARD = 2.0
+RELIC_REWARD = 1.0
+CARD_UPGRADE_REWARD = 0.5
+CARD_REMOVE_REWARD = 0.5
+
+DEATH_PENALTY = -25.0
+ACT_COMPLETION_REWARD = 15.0
+
+COMBAT_STEP_GRACE = 80
+ANTI_STALL_PENALTY = -0.02
 
 
 class SlayTheSpireEnv(gym.Env):
@@ -42,18 +54,19 @@ class SlayTheSpireEnv(gym.Env):
 
         self.current_state: Dict[str, Any] = {}
 
-        # Reward tracking — V3.1
+        # Reward tracking - V3.2
         self.last_player_hp: Optional[int] = None
         self.last_max_hp: Optional[int] = None
-        self.last_monster_total_hp: int = 0
+        self.last_monster_total_hp: Optional[int] = None
         self.last_floor: int = 0
         self.last_screen_type: str = "NONE"
-        self.last_relic_count: int = 1
-        self.last_deck_size: int = 10
-        self.last_upgraded_cards: int = 0
+        self.last_relic_ids: Optional[set[str]] = None
+        self.last_deck_size: Optional[int] = None
+        self.last_upgraded_cards: Optional[int] = None
         self.step_count: int = 0
         self.combat_step_count: int = 0
         self.last_act: int = 1
+        self.last_in_combat: bool = False
 
     def reset(
         self,
@@ -129,18 +142,19 @@ class SlayTheSpireEnv(gym.Env):
             print(f"Exception during reset: {e}", file=sys.stderr)
             raise
             
-        # Reset reward tracking — V3.1
+        # Reset reward tracking - V3.2
         self.last_player_hp = None
         self.last_max_hp = None
-        self.last_monster_total_hp = 0
+        self.last_monster_total_hp = None
         self.last_floor = 0
         self.last_screen_type = "NONE"
-        self.last_relic_count = 1
-        self.last_deck_size = 10
-        self.last_upgraded_cards = 0
+        self.last_relic_ids = None
+        self.last_deck_size = None
+        self.last_upgraded_cards = None
         self.step_count = 0
         self.combat_step_count = 0
         self.last_act = 1
+        self.last_in_combat = False
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self.action_masker.get_mask(self.current_state)
@@ -227,6 +241,20 @@ class SlayTheSpireEnv(gym.Env):
         deck = game_state.get("deck", [])
         return sum(card.get("upgrades", 0) for card in deck)
 
+    def _get_relic_ids(self, game_state: Dict[str, Any]) -> set[str]:
+        """Extract stable relic identifiers for delta tracking."""
+        relic_ids = set()
+        for relic in game_state.get("relics", []):
+            relic_id = relic.get("id") or relic.get("name")
+            if relic_id:
+                relic_ids.add(str(relic_id))
+        return relic_ids
+
+    def _bounded_hp_reward(self, delta: int) -> float:
+        """Preserve /100 HP scale while clipping extreme state deltas."""
+        clipped = max(-HP_DELTA_CAP, min(HP_DELTA_CAP, delta))
+        return clipped / HP_DELTA_SCALE
+
     def _is_in_combat(self, state: Dict[str, Any]) -> bool:
         """Check if we're actively in combat (playing cards)."""
         screen_type = state.get("game_state", {}).get("screen_type", "NONE")
@@ -234,11 +262,11 @@ class SlayTheSpireEnv(gym.Env):
         return screen_type == "NONE" and "end" in available_cmds
 
     # ──────────────────────────────────────────────────────────────
-    # V3.1 REWARD FUNCTION
+    # V3.2 REWARD FUNCTION
     # ──────────────────────────────────────────────────────────────
 
     def _calculate_reward(self) -> float:
-        """V3.1 reward: tanh-bounded combat, robust HP, one-shot terminal."""
+        """V3.2 reward: clipped HP deltas, robust terminal handling."""
         if not self.current_state:
             return 0.0
 
@@ -252,11 +280,12 @@ class SlayTheSpireEnv(gym.Env):
         screen_type = game_state.get("screen_type", "NONE")
         current_floor = game_state.get("floor", 0)
         current_monster_hp = self._get_total_monster_hp(game_state)
-        current_relic_count = len(game_state.get("relics", []))
+        current_relic_ids = self._get_relic_ids(game_state)
         current_deck_size = len(game_state.get("deck", []))
         current_upgraded_cards = self._count_upgraded_cards(game_state)
+        current_act = game_state.get("act", 1)
 
-        # ── Robust HP extraction (v3.1) ──
+        # ── Robust HP extraction ──
         # Priority: combat_state.player > game_state > last known
         current_hp = self.last_player_hp        # default to last known
         current_max_hp = self.last_max_hp        # default to last known
@@ -278,73 +307,73 @@ class SlayTheSpireEnv(gym.Env):
             if gs_max is not None:
                 current_max_hp = gs_max
 
-        # First-step bootstrap: if we still have None, seed from whatever we got
-        if current_hp is None:
-            current_hp = game_state.get("current_hp", 0)
+        hp_is_known = current_hp is not None
         if current_max_hp is None:
             current_max_hp = game_state.get("max_hp", 80)
 
         # ══════════════════════════════════════════
-        # A. COMBAT REWARDS
+        # A. HP PROGRESS REWARDS
         # ══════════════════════════════════════════
+        if (
+            self.last_in_combat
+            and self.last_monster_total_hp is not None
+            and (in_combat or screen_type == "COMBAT_REWARD")
+        ):
+            monster_delta = self.last_monster_total_hp - current_monster_hp
+            reward += self._bounded_hp_reward(monster_delta)
+
+        if self.last_player_hp is not None and hp_is_known:
+            hp_delta = current_hp - self.last_player_hp
+            reward += self._bounded_hp_reward(hp_delta)
+
         if in_combat:
-            # A1. Damage dealt — tanh-bounded [0, 1)
-            dmg_dealt = max(0, self.last_monster_total_hp - current_monster_hp)
-            reward += math.tanh(dmg_dealt / COMBAT_SCALE)
-
-            # A2. Damage taken — tanh-bounded (symmetric with A1)
-            if self.last_player_hp is not None:
-                hp_lost = max(0, self.last_player_hp - current_hp)
-                reward -= math.tanh(hp_lost / COMBAT_SCALE)
-
-            # A3. Anti-stall — only penalize after 40 combat steps
+            # Anti-stall: action-step fallback until a reliable turn counter exists.
             self.combat_step_count += 1
-            if self.combat_step_count > 40:
-                reward -= 0.02
+            if self.combat_step_count > COMBAT_STEP_GRACE:
+                reward += ANTI_STALL_PENALTY
 
         # ══════════════════════════════════════════
         # B. MACRO-ECONOMY
         # ══════════════════════════════════════════
 
-        # B1. Floor progress — PRIMARY signal
+        # B1. Floor progress — primary signal
         if current_floor > self.last_floor:
-            reward += 3.0
+            reward += FLOOR_REWARD * (current_floor - self.last_floor)
 
         # B2. Combat victory (screen transition guard)
         if screen_type == "COMBAT_REWARD" and self.last_screen_type != "COMBAT_REWARD":
-            reward += 2.0
+            reward += COMBAT_VICTORY_REWARD
             self.combat_step_count = 0
 
-        # B3. Relic acquired
-        if current_relic_count > self.last_relic_count:
-            reward += 1.0
+        # B3. Relics acquired, tracked by ID so swaps are not missed
+        if self.last_relic_ids is not None:
+            reward += RELIC_REWARD * len(current_relic_ids - self.last_relic_ids)
 
         # B4. Card upgraded
-        if current_upgraded_cards > self.last_upgraded_cards:
-            reward += 0.5
+        if self.last_upgraded_cards is not None:
+            upgrade_delta = max(0, current_upgraded_cards - self.last_upgraded_cards)
+            reward += CARD_UPGRADE_REWARD * upgrade_delta
 
         # B5. Card removed (outside combat only — filters exhaust noise)
-        if current_deck_size < self.last_deck_size and screen_type != "NONE":
-            reward += 0.5
-
-        # B6. Healing (outside combat only)
-        if self.last_player_hp is not None:
-            hp_gained = max(0, current_hp - self.last_player_hp)
-            if hp_gained > 0 and not in_combat:
-                reward += hp_gained / 100.0
+        if self.last_deck_size is not None and not in_combat:
+            removed = max(0, self.last_deck_size - current_deck_size)
+            reward += CARD_REMOVE_REWARD * removed
 
         # ══════════════════════════════════════════
         # C. TERMINAL STATES
         # ══════════════════════════════════════════
 
-        # C1. Death — dominant penalty
-        if current_hp <= 0 or screen_type in ["GAME_OVER", "DEATH"]:
-            reward -= 20.0
+        # C1. Death — include terminal no-longer-in-game states.
+        act_completed = current_act > self.last_act
+        not_in_game = not self.current_state.get("in_game", True)
+        dead_screen = screen_type in ["GAME_OVER", "DEATH"]
+        dead_by_hp = hp_is_known and current_hp <= 0
+        if dead_by_hp or dead_screen or (not_in_game and not act_completed):
+            reward += DEATH_PENALTY
 
-        # C2. Act completion — ONE-SHOT (v3.1 fix: fires exactly once per act transition)
-        current_act = game_state.get("act", 1)
+        # C2. Act completion — one-shot act transition bonus.
         if current_act > self.last_act and screen_type not in ["GAME_OVER", "DEATH"]:
-            reward += 10.0
+            reward += ACT_COMPLETION_REWARD
 
         # Reset combat counter when leaving combat
         if not in_combat and self.last_screen_type == "NONE":
@@ -358,16 +387,17 @@ class SlayTheSpireEnv(gym.Env):
         self.last_monster_total_hp = current_monster_hp
         self.last_floor = current_floor
         self.last_screen_type = screen_type
-        self.last_relic_count = current_relic_count
+        self.last_relic_ids = current_relic_ids
         self.last_deck_size = current_deck_size
         self.last_upgraded_cards = current_upgraded_cards
         self.last_act = current_act
+        self.last_in_combat = in_combat
 
         # Periodic logging
         self.step_count += 1
         if self.step_count % 50 == 0:
             print(
-                f"[REWARD V3.1 #{self.step_count}] r={reward:.3f} | "
+                f"[REWARD V3.2 #{self.step_count}] r={reward:.3f} | "
                 f"hp={current_hp}/{current_max_hp} floor={current_floor} "
                 f"screen={screen_type} combat_steps={self.combat_step_count}",
                 file=sys.stderr,

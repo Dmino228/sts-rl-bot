@@ -160,7 +160,7 @@ def main():
     model.set_logger(custom_logger)
 
     # 4. Training Loop with graceful exit
-    total_timesteps = 100_000
+    total_timesteps = 1_000_000
     try:
         train_logger.info("Starting training for %d timesteps ...", total_timesteps)
         model.learn(

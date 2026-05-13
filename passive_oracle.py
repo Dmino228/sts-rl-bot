@@ -1,8 +1,8 @@
 """
-Passive Oracle — Pure observer for V3.1 Reward System.
+Passive Oracle — Pure observer for V3.2 Reward System.
 
 The human plays via the game UI normally. This script passively reads
-every state CommunicationMod pushes, calculates the V3.1 reward delta,
+every state CommunicationMod pushes, calculates the V3.2 reward delta,
 and displays it in a dedicated console window + logs/passive_oracle.log.
 
 No commands are typed — the script auto-responds with STATE (no-op)
@@ -17,11 +17,24 @@ sys.__stdout__.flush()
 
 import ctypes
 import json
-import math
 import os
 import time
 
-COMBAT_SCALE = 50
+HP_DELTA_SCALE = 100.0
+HP_DELTA_CAP = 100
+
+FLOOR_REWARD = 3.0
+COMBAT_VICTORY_REWARD = 2.0
+RELIC_REWARD = 1.0
+CARD_UPGRADE_REWARD = 0.5
+CARD_REMOVE_REWARD = 0.5
+
+DEATH_PENALTY = -25.0
+ACT_COMPLETION_REWARD = 15.0
+
+COMBAT_STEP_GRACE = 80
+ANTI_STALL_PENALTY = -0.02
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -35,7 +48,7 @@ def _setup_console():
     kernel32.FreeConsole()
     if not kernel32.AllocConsole():
         return None
-    kernel32.SetConsoleTitleW("STS Oracle  —  V3.1 Reward Monitor")
+    kernel32.SetConsoleTitleW("STS Oracle  —  V3.2 Reward Monitor")
     try:
         return open("CONOUT$", "w", encoding="utf-8")
     except OSError:
@@ -83,7 +96,7 @@ def _read_state():
 
 
 # ──────────────────────────────────────────────────────────────
-# V3.1 HELPERS
+# V3.2 HELPERS
 # ──────────────────────────────────────────────────────────────
 
 def _get_total_monster_hp(gs):
@@ -98,6 +111,20 @@ def _count_upgraded_cards(gs):
     return sum(c.get("upgrades", 0) for c in gs.get("deck", []))
 
 
+def _get_relic_ids(gs):
+    relic_ids = set()
+    for relic in gs.get("relics", []):
+        relic_id = relic.get("id") or relic.get("name")
+        if relic_id:
+            relic_ids.add(str(relic_id))
+    return relic_ids
+
+
+def _bounded_hp_reward(delta):
+    clipped = max(-HP_DELTA_CAP, min(HP_DELTA_CAP, delta))
+    return clipped / HP_DELTA_SCALE
+
+
 def _is_in_combat(state):
     st = state.get("game_state", {}).get("screen_type", "NONE")
     return st == "NONE" and "end" in state.get("available_commands", [])
@@ -110,13 +137,15 @@ def _is_in_combat(state):
 def _fingerprint(state, gs, hp, monster_hp):
     """Quick hash to detect real state changes vs STATE echo."""
     return (
+        state.get("in_game", False),
         gs.get("floor", 0),
         gs.get("screen_type", ""),
         hp,
         monster_hp,
         gs.get("act", 1),
         len(gs.get("deck", [])),
-        len(gs.get("relics", [])),
+        _count_upgraded_cards(gs),
+        tuple(sorted(_get_relic_ids(gs))),
     )
 
 
@@ -186,21 +215,22 @@ def main():
     _cprint(con, f"  Log: {log_path}")
 
     _cprint(con, "=========================================")
-    _cprint(con, "  STS Passive Oracle — V3.1 Rewards")
+    _cprint(con, "  STS Passive Oracle — V3.2 Rewards")
     _cprint(con, "  Play the game normally via UI.")
     _cprint(con, "  Rewards are calculated automatically.")
     _cprint(con, "=========================================")
 
-    # V3.1 tracking
+    # V3.2 tracking
     last_hp = None
     last_max_hp = None
-    last_monster_hp = 0
+    last_monster_hp = None
     last_floor = 0
     last_screen = "NONE"
     last_act = 1
-    last_relics = 1
-    last_deck = 10
-    last_upgrades = 0
+    last_relic_ids = None
+    last_deck = None
+    last_upgrades = None
+    last_in_combat = False
     combat_steps = 0
     step = 0
     total_r = 0.0
@@ -219,8 +249,9 @@ def main():
 
             in_game = state.get("in_game", False)
 
-            # Not in game — throttled wait (1s) to avoid STATE spam
-            if not in_game:
+            # Pre-game: throttle wait (1s) to avoid STATE spam. Once we have
+            # tracked a run, process not-in-game states so terminal death is logged.
+            if not in_game and last_fp is None:
                 _cprint(con, f"[Pre-game] cmds={state.get('available_commands',[])}")
                 time.sleep(1.0)
                 _send_command("STATE")
@@ -230,7 +261,7 @@ def main():
             screen = gs.get("screen_type", "NONE")
             floor = gs.get("floor", 0)
             monster_hp = _get_total_monster_hp(gs)
-            relics = len(gs.get("relics", []))
+            relic_ids = _get_relic_ids(gs)
             deck = len(gs.get("deck", []))
             upgrades = _count_upgraded_cards(gs)
             in_combat = _is_in_combat(state)
@@ -250,8 +281,7 @@ def main():
                     hp = gh
                 if gm is not None:
                     max_hp = gm
-            if hp is None:
-                hp = gs.get("current_hp", 0)
+            hp_is_known = hp is not None
             if max_hp is None:
                 max_hp = gs.get("max_hp", 80)
 
@@ -263,68 +293,82 @@ def main():
                 continue
             last_fp = fp
 
-            # ── V3.1 REWARD ──
+            # ── V3.2 REWARD ──
             reward = 0.0
             parts = []
             act = gs.get("act", 1)
 
-            # A. Combat
+            # A. HP progress
+            if (
+                last_in_combat
+                and last_monster_hp is not None
+                and (in_combat or screen == "COMBAT_REWARD")
+            ):
+                monster_delta = last_monster_hp - monster_hp
+                mr = _bounded_hp_reward(monster_delta)
+                reward += mr
+                if abs(mr) > 0.001:
+                    label = "mhp" if mr > 0 else "mheal"
+                    parts.append(f"{label}:{mr:+.3f}")
+
+            if last_hp is not None and hp_is_known:
+                hp_delta = hp - last_hp
+                hr = _bounded_hp_reward(hp_delta)
+                reward += hr
+                if abs(hr) > 0.001:
+                    label = "heal" if hr > 0 else "hit"
+                    parts.append(f"{label}:{hr:+.3f}")
+
             if in_combat:
-                dmg = max(0, last_monster_hp - monster_hp)
-                a1 = math.tanh(dmg / COMBAT_SCALE)
-                reward += a1
-                if a1 > 0.001:
-                    parts.append(f"dmg:{a1:+.3f}")
-
-                if last_hp is not None:
-                    lost = max(0, last_hp - hp)
-                    a2 = -math.tanh(lost / COMBAT_SCALE)
-                    reward += a2
-                    if a2 < -0.001:
-                        parts.append(f"hit:{a2:+.3f}")
-
                 combat_steps += 1
-                if combat_steps > 40:
-                    reward -= 0.02
+                if combat_steps > COMBAT_STEP_GRACE:
+                    reward += ANTI_STALL_PENALTY
                     parts.append("stall")
 
             # B. Macro
             if floor > last_floor:
-                reward += 3.0
-                parts.append("floor:+3")
+                fr = FLOOR_REWARD * (floor - last_floor)
+                reward += fr
+                parts.append(f"floor:{fr:+.1f}")
 
             if screen == "COMBAT_REWARD" and last_screen != "COMBAT_REWARD":
-                reward += 2.0
+                reward += COMBAT_VICTORY_REWARD
                 combat_steps = 0
-                parts.append("victory:+2")
+                parts.append(f"victory:{COMBAT_VICTORY_REWARD:+.1f}")
 
-            if relics > last_relics:
-                reward += 1.0
-                parts.append("relic:+1")
+            if last_relic_ids is not None:
+                relic_delta = len(relic_ids - last_relic_ids)
+                if relic_delta:
+                    rr = RELIC_REWARD * relic_delta
+                    reward += rr
+                    parts.append(f"relic:{rr:+.1f}")
 
-            if upgrades > last_upgrades:
-                reward += 0.5
-                parts.append("upgrade:+0.5")
+            if last_upgrades is not None:
+                upgrade_delta = max(0, upgrades - last_upgrades)
+                if upgrade_delta:
+                    ur = CARD_UPGRADE_REWARD * upgrade_delta
+                    reward += ur
+                    parts.append(f"upgrade:{ur:+.1f}")
 
-            if deck < last_deck and screen != "NONE":
-                reward += 0.5
-                parts.append("removed:+0.5")
-
-            if last_hp is not None:
-                hg = max(0, hp - last_hp)
-                if hg > 0 and not in_combat:
-                    h = hg / 100.0
-                    reward += h
-                    parts.append(f"heal:{h:+.3f}")
+            if last_deck is not None and not in_combat:
+                removed = max(0, last_deck - deck)
+                if removed:
+                    cr = CARD_REMOVE_REWARD * removed
+                    reward += cr
+                    parts.append(f"removed:{cr:+.1f}")
 
             # C. Terminal
-            if hp <= 0 or screen in ["GAME_OVER", "DEATH"]:
-                reward -= 20.0
-                parts.append("DEATH:-20")
+            act_completed = act > last_act
+            not_in_game = not state.get("in_game", True)
+            dead_screen = screen in ["GAME_OVER", "DEATH"]
+            dead_by_hp = hp_is_known and hp <= 0
+            if dead_by_hp or dead_screen or (not_in_game and not act_completed):
+                reward += DEATH_PENALTY
+                parts.append(f"DEATH:{DEATH_PENALTY:+.0f}")
 
             if act > last_act and screen not in ["GAME_OVER", "DEATH"]:
-                reward += 10.0
-                parts.append(f"ACT{act}:+10")
+                reward += ACT_COMPLETION_REWARD
+                parts.append(f"ACT{act}:{ACT_COMPLETION_REWARD:+.0f}")
 
             if not in_combat and last_screen == "NONE":
                 combat_steps = 0
@@ -359,9 +403,10 @@ def main():
             last_floor = floor
             last_screen = screen
             last_act = act
-            last_relics = relics
+            last_relic_ids = relic_ids
             last_deck = deck
             last_upgrades = upgrades
+            last_in_combat = in_combat
 
             # ── AUTO-RESPOND: keep pipe alive without interfering ──
             _send_command("STATE")
