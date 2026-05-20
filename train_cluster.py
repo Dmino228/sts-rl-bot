@@ -15,6 +15,7 @@ import argparse
 import datetime
 import traceback
 import multiprocessing
+import time
 from typing import List, Callable
 
 # Setup centralized logging
@@ -73,6 +74,14 @@ def parse_args():
         "--force-rebuild", action="store_true",
         help="Force rebuild of worker directories (delete and copy again).",
     )
+    parser.add_argument(
+        "--debug-env-info", action="store_true",
+        help="Include full raw_state in VecEnv infos for debugging (slower IPC).",
+    )
+    parser.add_argument(
+        "--progress-log-freq", type=int, default=250,
+        help="Log rollout throughput every N vector steps (0 disables).",
+    )
     return parser.parse_args()
 
 
@@ -95,7 +104,13 @@ def clean_worker_state(worker_dir: str) -> None:
         os.makedirs(path, exist_ok=True)
 
 
-def make_env(worker_id: int, assigned_char: str, worker_dir: str, use_xvfb: bool) -> Callable:
+def make_env(
+    worker_id: int,
+    assigned_char: str,
+    worker_dir: str,
+    use_xvfb: bool,
+    debug_env_info: bool,
+) -> Callable:
     """Closure factory to create a single wrapped environment."""
     def _init():
         # Late imports inside the worker process to avoid issues under spawn start method
@@ -106,6 +121,8 @@ def make_env(worker_id: int, assigned_char: str, worker_dir: str, use_xvfb: bool
             character_class=assigned_char,
             worker_dir=worker_dir,
             use_xvfb=use_xvfb,
+            include_raw_state_in_info=debug_env_info,
+            include_action_mask_in_info=True,
         )
         # Note: env.reset() will automatically launch the Java subprocess
         return ActionMasker(env, lambda _: env.get_action_mask())
@@ -127,10 +144,40 @@ def main():
     # 1. Late imports of ML/RL heavy dependencies
     logger.info("Loading PyTorch and Stable Baselines3 ...")
     from stable_baselines3.common.vec_env import SubprocVecEnv
-    from stable_baselines3.common.callbacks import CheckpointCallback
+    from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.logger import configure
+    from mask_cache_vec_env import CachedActionMaskVecEnv
     logger.info("Imports completed.")
+
+    class ClusterProgressCallback(BaseCallback):
+        """Log rollout throughput before a full PPO iteration completes."""
+
+        def __init__(self, log_freq: int = 250) -> None:
+            super().__init__()
+            self.log_freq = log_freq
+            self._last_time = time.perf_counter()
+            self._last_timesteps = 0
+
+        def _on_training_start(self) -> None:
+            self._last_time = time.perf_counter()
+            self._last_timesteps = self.num_timesteps
+
+        def _on_step(self) -> bool:
+            if self.log_freq > 0 and self.n_calls % self.log_freq == 0:
+                now = time.perf_counter()
+                elapsed = max(now - self._last_time, 1e-9)
+                delta = self.num_timesteps - self._last_timesteps
+                logger.info(
+                    "Rollout progress: timesteps=%d (+%d), %.2f env steps/s over %d vector steps",
+                    self.num_timesteps,
+                    delta,
+                    delta / elapsed,
+                    self.log_freq,
+                )
+                self._last_time = now
+                self._last_timesteps = self.num_timesteps
+            return True
 
     # 2. Worker folder setup and character assignment
     os.makedirs(args.workspace_dir, exist_ok=True)
@@ -170,7 +217,15 @@ def main():
         worker_dirs.append(worker_dir)
 
         # Append to environment list
-        env_fns.append(make_env(i, assigned_char, worker_dir, args.use_xvfb))
+        env_fns.append(
+            make_env(
+                i,
+                assigned_char,
+                worker_dir,
+                args.use_xvfb,
+                args.debug_env_info,
+            )
+        )
 
     # 3. Vectorized Environment Setup
     # Determine the safest multiprocessing start method
@@ -178,7 +233,7 @@ def main():
     start_method = "fork" if sys.platform != "win32" else "spawn"
     logger.info("Creating SubprocVecEnv with %d workers (start method: %s)...", args.workers, start_method)
     
-    vec_env = SubprocVecEnv(env_fns, start_method=start_method)
+    vec_env = CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method=start_method))
 
     # 4. Centralized TensorBoard and model checkpoint configuration
     tensorboard_path = os.path.join(BASE_DIR, "logs", "ppo_sts_cluster")
@@ -192,6 +247,10 @@ def main():
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
+    callbacks = CallbackList([
+        checkpoint_callback,
+        ClusterProgressCallback(log_freq=args.progress_log_freq),
+    ])
 
     # Initialize model
     logger.info("Initializing MaskablePPO model...")
@@ -212,7 +271,7 @@ def main():
         logger.info("Starting training run for %d total timesteps...", args.timesteps)
         model.learn(
             total_timesteps=args.timesteps,
-            callback=checkpoint_callback,
+            callback=callbacks,
         )
         logger.info("Training finished successfully!")
     except KeyboardInterrupt:

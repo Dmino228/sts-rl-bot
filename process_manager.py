@@ -208,13 +208,16 @@ if __name__ == "__main__":
             with open(sfm_file, "w", encoding="utf-8") as f:
                 f.write(sfm_content)
 
-        # Override info.displayconfig to disable V-Sync and uncap FPS.
-        # V-Sync caps the game loop to monitor refresh rate (e.g. 165 Hz),
-        # which directly limits how fast CommunicationMod can send/receive states.
-        # Format: width / height / fps_cap(0=unlimited) / fullscreen / borderless / vsync
         display_config = os.path.join(game_dir_abs, "info.displayconfig")
-        with open(display_config, "w", encoding="utf-8") as f:
-            f.write("640\n480\n0\nfalse\nfalse\nfalse\n")
+        forced_uncapped_config = "640\n480\n0\nfalse\nfalse\nfalse\n"
+        try:
+            if os.path.isfile(display_config):
+                with open(display_config, "r", encoding="utf-8") as f:
+                    if f.read() == forced_uncapped_config:
+                        os.remove(display_config)
+                        logger.info("[LAUNCH] Removed stale uncapped display config.")
+        except Exception as e:
+            logger.warning("[LAUNCH] Could not restore display config: %s", e)
 
         java_cmd = [
             java_bin,

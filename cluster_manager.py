@@ -230,6 +230,7 @@ worker_main(
         """
         from stable_baselines3.common.vec_env import SubprocVecEnv
         from sb3_contrib.common.wrappers import ActionMasker
+        from mask_cache_vec_env import CachedActionMaskVecEnv
 
         if not self._initialized:
             self.initialize_workers(character_schedule=character_schedule)
@@ -246,6 +247,8 @@ worker_main(
                     character_class=character,
                     worker_dir=worker_dir,
                     use_xvfb=self.use_xvfb,
+                    include_raw_state_in_info=False,
+                    include_action_mask_in_info=True,
                 )
 
                 # Launch the game subprocess (Python-as-parent mode)
@@ -271,7 +274,7 @@ worker_main(
             "[CLUSTER] Creating SubprocVecEnv with %d workers...",
             self.num_workers,
         )
-        return SubprocVecEnv(env_fns, start_method="fork")
+        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method="fork"))
 
     # ──────────────────────────────────────────────────────────────
     # CLEANUP
