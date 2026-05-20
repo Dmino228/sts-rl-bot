@@ -2,8 +2,8 @@
 train_cluster.py — Parallel local cluster training for Slay the Spire.
 
 Orchestrates N isolated workers running SlayTheSpireEnv in parallel
-using stable-baselines3's SubprocVecEnv. Handles round-robin character
-assignment, directory cloning/isolation, and clean subprocess teardown.
+using a Stable Baselines3 VecEnv backend. Handles round-robin character
+assignment, directory cloning/isolation, and clean teardown.
 """
 
 import sys
@@ -40,7 +40,7 @@ logger = logging.getLogger("train_cluster")
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Local STS Parallel Cluster Training with SubprocVecEnv"
+        description="Local STS Parallel Cluster Training"
     )
     parser.add_argument(
         "--workers", type=int, default=4,
@@ -81,6 +81,16 @@ def parse_args():
     parser.add_argument(
         "--progress-log-freq", type=int, default=250,
         help="Log rollout throughput every N vector steps (0 disables).",
+    )
+    parser.add_argument(
+        "--vec-env",
+        choices=["auto", "dummy", "threaded", "subproc"],
+        default="auto",
+        help="VecEnv backend. auto uses Dummy for 1 worker and Threaded on Windows.",
+    )
+    parser.add_argument(
+        "--torch-threads", type=int, default=1,
+        help="Limit PyTorch CPU worker threads used by the coordinator process.",
     )
     return parser.parse_args()
 
@@ -143,12 +153,26 @@ def main():
 
     # 1. Late imports of ML/RL heavy dependencies
     logger.info("Loading PyTorch and Stable Baselines3 ...")
+    import torch as th
+    from stable_baselines3.common.vec_env import DummyVecEnv
     from stable_baselines3.common.vec_env import SubprocVecEnv
     from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.logger import configure
     from mask_cache_vec_env import CachedActionMaskVecEnv
+    from threaded_vec_env import ThreadedVecEnv
     logger.info("Imports completed.")
+
+    if args.torch_threads > 0:
+        th.set_num_threads(args.torch_threads)
+        try:
+            th.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+        logger.info(
+            "PyTorch CPU threads limited: num_threads=%d interop_threads=1",
+            args.torch_threads,
+        )
 
     class ClusterProgressCallback(BaseCallback):
         """Log rollout throughput before a full PPO iteration completes."""
@@ -228,12 +252,32 @@ def main():
         )
 
     # 3. Vectorized Environment Setup
-    # Determine the safest multiprocessing start method
-    # Linux supports 'fork' (much faster startup); Windows/macOS MUST use 'spawn'.
-    start_method = "fork" if sys.platform != "win32" else "spawn"
-    logger.info("Creating SubprocVecEnv with %d workers (start method: %s)...", args.workers, start_method)
-    
-    vec_env = CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method=start_method))
+    backend = args.vec_env
+    if backend == "auto":
+        if args.workers == 1:
+            backend = "dummy"
+        elif sys.platform == "win32":
+            backend = "threaded"
+        else:
+            backend = "subproc"
+
+    if backend == "dummy":
+        logger.info("Creating DummyVecEnv with %d worker(s)...", args.workers)
+        vec_env_base = DummyVecEnv(env_fns)
+    elif backend == "threaded":
+        logger.info("Creating ThreadedVecEnv with %d workers...", args.workers)
+        vec_env_base = ThreadedVecEnv(env_fns)
+    else:
+        # Linux supports 'fork' (much faster startup); Windows/macOS MUST use 'spawn'.
+        start_method = "fork" if sys.platform != "win32" else "spawn"
+        logger.info(
+            "Creating SubprocVecEnv with %d workers (start method: %s)...",
+            args.workers,
+            start_method,
+        )
+        vec_env_base = SubprocVecEnv(env_fns, start_method=start_method)
+
+    vec_env = CachedActionMaskVecEnv(vec_env_base)
 
     # 4. Centralized TensorBoard and model checkpoint configuration
     tensorboard_path = os.path.join(BASE_DIR, "logs", "ppo_sts_cluster")
