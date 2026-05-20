@@ -190,6 +190,24 @@ if __name__ == "__main__":
             with open(cfg_file, "w", encoding="utf-8") as f:
                 f.write(config_content)
 
+        # Write SuperFastModeConfig.properties to maximize game speed during training.
+        # deltaMultiplier=10.0 is the maximum supported value.
+        sfm_dirs = [
+            os.path.join(game_dir_abs, "LocalAppData", "ModTheSpire", "SuperFastMode"),
+            os.path.join(game_dir_abs, ".config", "ModTheSpire", "SuperFastMode"),
+        ]
+        sfm_content = (
+            "isDeltaMultiplied=true\n"
+            "deltaMultiplier=10.0\n"
+            "EXISTS=YES INDEED I EXIST\n"
+            "isInstantLerp=true\n"
+        )
+        for sfm_dir in sfm_dirs:
+            os.makedirs(sfm_dir, exist_ok=True)
+            sfm_file = os.path.join(sfm_dir, "SuperFastModeConfig.properties")
+            with open(sfm_file, "w", encoding="utf-8") as f:
+                f.write(sfm_content)
+
         # Build the Java command
         java_cmd = [
             java_bin,
