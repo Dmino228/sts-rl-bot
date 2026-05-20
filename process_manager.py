@@ -299,16 +299,16 @@ if __name__ == "__main__":
                 state = json.loads(line)
                 if isinstance(state, dict):
                     self._last_state = state
-                    # Log a compact summary of the received state
-                    screen = state.get("game_state", {}).get("screen_type", "?")
-                    in_game = state.get("in_game", "?")
-                    cmds = state.get("available_commands", [])
-                    floor = state.get("game_state", {}).get("floor", "?")
-                    hp = state.get("game_state", {}).get("current_hp", "?")
-                    logger.info(
-                        "[RECV] in_game=%s screen=%s floor=%s hp=%s cmds=%s",
-                        in_game, screen, floor, hp, cmds,
-                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        screen = state.get("game_state", {}).get("screen_type", "?")
+                        in_game = state.get("in_game", "?")
+                        cmds = state.get("available_commands", [])
+                        floor = state.get("game_state", {}).get("floor", "?")
+                        hp = state.get("game_state", {}).get("current_hp", "?")
+                        logger.debug(
+                            "[RECV] in_game=%s screen=%s floor=%s hp=%s cmds=%s",
+                            in_game, screen, floor, hp, cmds,
+                        )
                     return state
                 else:
                     logger.debug("Ignored non-dict JSON: %s", line[:100])
@@ -333,7 +333,7 @@ if __name__ == "__main__":
         """
         self._stdout_stream.write(command + "\n")
         self._stdout_stream.flush()
-        logger.info("[SEND] %s", command)
+        logger.debug("[SEND] %s", command)
 
     def stop(self) -> None:
         """Terminate the subprocess if we launched it."""

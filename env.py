@@ -141,11 +141,12 @@ class SlayTheSpireEnv(gym.Env):
                 in_game = self.current_state.get("in_game", False)
                 available_cmds = self.current_state.get("available_commands", [])
 
-                print(
-                    f"[reset cleanup #{cleanup_step}] in_game={in_game}, "
-                    f"cmds={available_cmds}",
-                    file=sys.stderr,
-                )
+                # Verbose cleanup logging disabled for performance
+                # print(
+                #     f"[reset cleanup #{cleanup_step}] in_game={in_game}, "
+                #     f"cmds={available_cmds}",
+                #     file=sys.stderr,
+                # )
 
                 if not in_game and "start" in available_cmds:
                     print(
@@ -506,7 +507,7 @@ class SlayTheSpireEnv(gym.Env):
 
         # Periodic logging
         self.step_count += 1
-        if self.step_count % 50 == 0:
+        if self.step_count % 500 == 0:
             print(
                 f"[REWARD V3.2 #{self.step_count}] r={reward:.3f} | "
                 f"hp={current_hp}/{current_max_hp} floor={current_floor} "

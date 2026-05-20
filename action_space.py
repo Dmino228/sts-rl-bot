@@ -155,12 +155,13 @@ class ActionMasker:
             cards = screen_state.get("cards", [])
             num_choices = len(cards)
             
-            print(
-                f"[GRID DEBUG] confirm_up={confirm_up}, "
-                f"total_cards={num_choices}, "
-                f"available_cmds={available_cmds}",
-                file=sys.stderr
-            )
+            # GRID DEBUG logging disabled for performance
+            # print(
+            #     f"[GRID DEBUG] confirm_up={confirm_up}, "
+            #     f"total_cards={num_choices}, "
+            #     f"available_cmds={available_cmds}",
+            #     file=sys.stderr
+            # )
             
             # ALWAYS block RETURN/cancel on GRID — prevents the infinite loop
             mask[67] = 0
