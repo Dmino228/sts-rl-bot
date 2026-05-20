@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 class ActionMapper:
     """
@@ -8,7 +8,7 @@ class ActionMapper:
     def __init__(self):
         self.action_space_size = 100
 
-    def get_action_string(self, action_id: int, state: Dict[str, Any] = None) -> str:
+    def get_action_string(self, action_id: int, state: Optional[Dict[str, Any]] = None) -> str:
         if 0 <= action_id <= 9:
             # Untargeted card
             card_idx = action_id + 1

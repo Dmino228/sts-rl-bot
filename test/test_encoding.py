@@ -42,7 +42,7 @@ def test_combat_encoding():
     
     encoder = StateEncoder()
     obs = encoder.encode(mock_state)
-    assert obs.shape == (152,), f"Expected shape (152,), got {obs.shape}"
+    assert obs.shape == (205,), f"Expected shape (205,), got {obs.shape}"
     
     # Global context
     assert obs[3] == 1.0, "Screen type COMBAT should be at index 3"
@@ -96,7 +96,7 @@ def test_event_encoding():
     
     encoder = StateEncoder()
     obs = encoder.encode(mock_state)
-    assert obs.shape == (152,)
+    assert obs.shape == (205,)
     
     # Global context
     assert obs[0] == 1.0, "Screen type EVENT should be at index 0"
@@ -108,8 +108,7 @@ def test_event_encoding():
     assert obs[10] == 75/80.0
     assert obs[11] == 0.0, "Energy should be 0 out of combat"
     
-    # Combat features should be 0
-    assert np.all(obs[22:] == 0.0), "All cards and monsters should be 0 out of combat"
+    assert np.all(obs[22:152] == 0.0), "All cards and monsters should be 0 out of combat"
     
     # Mask
     masker = ActionMasker()
@@ -126,3 +125,84 @@ def test_event_encoding():
     assert 71 not in valid_actions, "CHOOSE 3 should be invalid"
     assert 65 not in valid_actions, "END should be invalid"
     assert 0 not in valid_actions, "PLAY should be invalid"
+
+
+def test_multi_character_encoding():
+    # Test Watcher Stances
+    mock_watcher_state = {
+        "game_state": {
+            "screen_type": "COMBAT",
+            "combat_state": {
+                "player": {
+                    "stance": "Calm"
+                }
+            }
+        }
+    }
+    encoder = StateEncoder()
+    obs = encoder.encode(mock_watcher_state)
+    assert obs.shape == (205,)
+    assert obs[152] == 0.0 # Wrath
+    assert obs[153] == 1.0 # Calm
+    assert obs[154] == 0.0 # Divinity
+
+    # Test Defect Orbs
+    mock_defect_state = {
+        "game_state": {
+            "screen_type": "COMBAT",
+            "combat_state": {
+                "player": {
+                    "orbs": [
+                        {"id": "Lightning", "name": "Lightning"},
+                        {"id": "Frost", "name": "Frost"},
+                        {"id": "Dark", "name": "Dark"},
+                        {"id": "Plasma", "name": "Plasma"},
+                        {"id": "Empty", "name": "Empty Slot"}
+                    ]
+                }
+            }
+        }
+    }
+    obs = encoder.encode(mock_defect_state)
+    assert obs.shape == (205,)
+    # Orb 0: Lightning
+    assert obs[155] == 1.0
+    assert obs[156] == 0.0
+    assert obs[157] == 0.0
+    assert obs[158] == 0.0
+    assert obs[159] == 0.0
+
+    # Orb 1: Frost
+    assert obs[160] == 0.0
+    assert obs[161] == 1.0
+    assert obs[162] == 0.0
+    assert obs[163] == 0.0
+    assert obs[164] == 0.0
+
+    # Orb 2: Dark
+    assert obs[165] == 0.0
+    assert obs[166] == 0.0
+    assert obs[167] == 1.0
+    assert obs[168] == 0.0
+    assert obs[169] == 0.0
+
+    # Orb 3: Plasma
+    assert obs[170] == 0.0
+    assert obs[171] == 0.0
+    assert obs[172] == 0.0
+    assert obs[173] == 1.0
+    assert obs[174] == 0.0
+
+    # Orb 4: Empty
+    assert obs[175] == 0.0
+    assert obs[176] == 0.0
+    assert obs[177] == 0.0
+    assert obs[178] == 0.0
+    assert obs[179] == 1.0
+
+    # Orb 5: (not present -> Empty)
+    assert obs[180] == 0.0
+    assert obs[181] == 0.0
+    assert obs[182] == 0.0
+    assert obs[183] == 0.0
+    assert obs[184] == 1.0

@@ -5,10 +5,10 @@ import math
 
 class StateEncoder:
     """
-    Parses the game_state JSON and outputs a fixed-size 1D NumPy array (152,).
+    Parses the game_state JSON and outputs a fixed-size 1D NumPy array (205,).
     """
     def __init__(self):
-        self.shape = (152,)
+        self.shape = (205,)
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=self.shape, dtype=np.float32)
         
     def encode(self, state: Dict[str, Any]) -> np.ndarray:
@@ -119,4 +119,31 @@ class StateEncoder:
             obs[base_idx + 8] = m_powers_dict.get("Weak", 0) / 10.0
             obs[base_idx + 9] = m_powers_dict.get("Ritual", 0) / 10.0
             
+        # 5. Watcher Stances - 3 bits (152-154)
+        stance_str = str(player.get("stance", "")).upper()
+        if 152 < self.shape[0]:
+            obs[152] = 1.0 if stance_str == "WRATH" else 0.0
+        if 153 < self.shape[0]:
+            obs[153] = 1.0 if stance_str == "CALM" else 0.0
+        if 154 < self.shape[0]:
+            obs[154] = 1.0 if stance_str == "DIVINITY" else 0.0
+
+        # 6. Defect Orbs - Max 10 slots (155-204)
+        orbs = player.get("orbs", [])
+        for i in range(10):
+            base_idx = 155 + (i * 5)
+            if base_idx + 4 >= self.shape[0]:
+                break
+            if i < len(orbs):
+                orb = orbs[i]
+                orb_id = str(orb.get("id", "Empty")).upper()
+            else:
+                orb_id = "EMPTY"
+            
+            obs[base_idx] = 1.0 if orb_id == "LIGHTNING" else 0.0
+            obs[base_idx + 1] = 1.0 if orb_id == "FROST" else 0.0
+            obs[base_idx + 2] = 1.0 if orb_id == "DARK" else 0.0
+            obs[base_idx + 3] = 1.0 if orb_id == "PLASMA" else 0.0
+            obs[base_idx + 4] = 1.0 if orb_id == "EMPTY" else 0.0
+
         return obs
