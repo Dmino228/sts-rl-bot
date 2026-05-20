@@ -83,6 +83,10 @@ def parse_args():
         help="Log rollout throughput every N vector steps (0 disables).",
     )
     parser.add_argument(
+        "--throughput-file", type=str, default="",
+        help="Optional path to a CSV file where overall steps per second will be appended.",
+    )
+    parser.add_argument(
         "--vec-env",
         choices=["auto", "dummy", "threaded", "subproc"],
         default="auto",
@@ -177,11 +181,17 @@ def main():
     class ClusterProgressCallback(BaseCallback):
         """Log rollout throughput before a full PPO iteration completes."""
 
-        def __init__(self, log_freq: int = 250) -> None:
+        def __init__(self, log_freq: int = 250, throughput_file: str = "") -> None:
             super().__init__()
             self.log_freq = log_freq
+            self.throughput_file = throughput_file
             self._last_time = time.perf_counter()
             self._last_timesteps = 0
+
+            if self.throughput_file and not os.path.exists(self.throughput_file):
+                os.makedirs(os.path.dirname(os.path.abspath(self.throughput_file)), exist_ok=True)
+                with open(self.throughput_file, "w", encoding="utf-8") as f:
+                    f.write("timestamp,total_timesteps,env_steps_per_sec\n")
 
         def _on_training_start(self) -> None:
             self._last_time = time.perf_counter()
@@ -192,13 +202,21 @@ def main():
                 now = time.perf_counter()
                 elapsed = max(now - self._last_time, 1e-9)
                 delta = self.num_timesteps - self._last_timesteps
+                steps_per_sec = delta / elapsed
                 logger.info(
                     "Rollout progress: timesteps=%d (+%d), %.2f env steps/s over %d vector steps",
                     self.num_timesteps,
                     delta,
-                    delta / elapsed,
+                    steps_per_sec,
                     self.log_freq,
                 )
+                if self.throughput_file:
+                    try:
+                        with open(self.throughput_file, "a", encoding="utf-8") as f:
+                            f.write(f"{time.time():.3f},{self.num_timesteps},{steps_per_sec:.2f}\n")
+                    except Exception as e:
+                        logger.error("Failed to write to throughput file: %s", e)
+                
                 self._last_time = now
                 self._last_timesteps = self.num_timesteps
             return True
@@ -293,7 +311,10 @@ def main():
     )
     callbacks = CallbackList([
         checkpoint_callback,
-        ClusterProgressCallback(log_freq=args.progress_log_freq),
+        ClusterProgressCallback(
+            log_freq=args.progress_log_freq,
+            throughput_file=args.throughput_file,
+        ),
     ])
 
     # Initialize model
