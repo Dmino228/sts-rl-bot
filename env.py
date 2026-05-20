@@ -105,6 +105,11 @@ class SlayTheSpireEnv(gym.Env):
         """Wait for the initial game state from CommunicationMod."""
         super().reset(seed=seed)
 
+        # Launch the game subprocess if running in Python-as-parent mode
+        if self.worker_dir is not None and self.process_manager._proc is None:
+            self.process_manager.launch_game()
+            self.process_manager.signal_ready()
+
         try:
             print("Waiting for game state from CommunicationMod...", file=sys.stderr)
 
@@ -143,12 +148,11 @@ class SlayTheSpireEnv(gym.Env):
                 )
 
                 if not in_game and "start" in available_cmds:
-                    char_lower = self.character_class.lower()
                     print(
-                        f"At main menu. Sending START {char_lower}...",
+                        f"At main menu. Sending START {self.character_class}...",
                         file=sys.stderr,
                     )
-                    self.process_manager.send_command(f"START {char_lower}")
+                    self.process_manager.send_command(f"START {self.character_class}")
                     break
                 elif "proceed" in available_cmds:
                     self.process_manager.send_command("PROCEED")

@@ -11,3 +11,4 @@ config.properties*
 SlayTheSpire
 sts_env_*.zip
 pyrightconfig.json
+cluster_workers
