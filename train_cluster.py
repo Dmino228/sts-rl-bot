@@ -129,6 +129,7 @@ def make_env(
     def _init():
         # Late imports inside the worker process to avoid issues under spawn start method
         from env import SlayTheSpireEnv
+        from stable_baselines3.common.monitor import Monitor
         from sb3_contrib.common.wrappers import ActionMasker
 
         env = SlayTheSpireEnv(
@@ -138,6 +139,9 @@ def make_env(
             include_raw_state_in_info=debug_env_info,
             include_action_mask_in_info=True,
         )
+        # Monitor must wrap BEFORE ActionMasker so that info["episode"]
+        # (populated on done=True) propagates through VecEnv to SB3's logger.
+        env = Monitor(env)
         # Note: env.reset() will automatically launch the Java subprocess
         return ActionMasker(env, lambda _: env.get_action_mask())
 
@@ -353,12 +357,12 @@ def main():
         except Exception as e:
             logger.error("Failed to save final model: %s", e)
 
-        # Robust cleanup of SubprocVecEnv workers
-        logger.info("Closing SubprocVecEnv workers and terminating Java subprocesses...")
+        # Robust cleanup of VecEnv workers
+        logger.info("Closing VecEnv workers and terminating Java subprocesses...")
         try:
             vec_env.close()
         except Exception as e:
-            logger.error("Error closing SubprocVecEnv: %s", e)
+            logger.error("Error closing VecEnv: %s", e)
         logger.info("Cleanup completed.")
 
 

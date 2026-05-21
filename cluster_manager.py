@@ -242,6 +242,7 @@ worker_main(
 
             def _init():
                 from env import SlayTheSpireEnv
+                from stable_baselines3.common.monitor import Monitor
 
                 env = SlayTheSpireEnv(
                     character_class=character,
@@ -254,6 +255,9 @@ worker_main(
                 # Launch the game subprocess (Python-as-parent mode)
                 env.process_manager.launch_game()
                 env.process_manager.signal_ready()
+
+                # Monitor tracks episode rewards/lengths for TensorBoard
+                env = Monitor(env)
 
                 # Wrap for MaskablePPO
                 return ActionMasker(env, lambda _: env.get_action_mask())
