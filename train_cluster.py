@@ -8,6 +8,7 @@ assignment, directory cloning/isolation, and clean teardown.
 
 import sys
 import os
+import glob
 import stat
 import shutil
 import logging
@@ -22,6 +23,14 @@ from typing import List, Callable
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
+
+# Cleanup old log files
+for pattern in ["training_*.log", "cluster_training_*.log"]:
+    for f in glob.glob(os.path.join(LOGS_DIR, pattern)):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
 
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 log_file = os.path.join(LOGS_DIR, f"cluster_training_{TIMESTAMP}.log")
