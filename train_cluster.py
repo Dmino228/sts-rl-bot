@@ -141,7 +141,7 @@ def make_env(
         from stable_baselines3.common.monitor import Monitor
         from sb3_contrib.common.wrappers import ActionMasker
 
-        env = SlayTheSpireEnv(
+        base_env = SlayTheSpireEnv(
             character_class=assigned_char,
             worker_dir=worker_dir,
             use_xvfb=use_xvfb,
@@ -150,9 +150,9 @@ def make_env(
         )
         # Monitor must wrap BEFORE ActionMasker so that info["episode"]
         # (populated on done=True) propagates through VecEnv to SB3's logger.
-        env = Monitor(env)
+        env = Monitor(base_env)
         # Note: env.reset() will automatically launch the Java subprocess
-        return ActionMasker(env, lambda _: env.get_action_mask())
+        return ActionMasker(env, lambda _: base_env.get_action_mask())
 
     return _init
 
