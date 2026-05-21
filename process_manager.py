@@ -225,28 +225,18 @@ if __name__ == "__main__":
 
         java_cmd = [
             java_bin,
-            "-Xmx512m", "-Xms512m",         # Heap
-            "-XX:MaxDirectMemorySize=256m", # Native Memory (Textures/Audio)
+            "-Xmx256m", "-Xms128m",         # Heap
+            "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
             "-Xss256k",                     # Thread Stacks
-            "-XX:ReservedCodeCacheSize=64m",# Code Cache
-            "-XX:MaxMetaspaceSize=128m",    # Metadata (classes)
+            "-XX:ReservedCodeCacheSize=16m",# Code Cache
+            "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
             "-XX:+UseSerialGC",             # Garbage Collector
+            "-Xint",
             "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
             "nogui",
             "--skip-launcher",
             "--mods", "basemod,CommunicationMod,stslib,superfastmode",
         ]
-
-        # java_cmd = [
-        #     java_bin,
-        #     "-Xmx512m", "-Xms512m",
-        #     "-XX:+UseSerialGC",
-        #     "-XX:MaxMetaspaceSize=128m",
-        #     "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
-            # "nogui",
-            # "--skip-launcher",
-            # "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-        # ]
 
         # Wrap in xvfb-run for headless Linux (Colab)
         if self.use_xvfb:
