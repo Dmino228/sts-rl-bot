@@ -209,22 +209,44 @@ if __name__ == "__main__":
                 f.write(sfm_content)
 
         display_config = os.path.join(game_dir_abs, "info.displayconfig")
-        forced_uncapped_config = "640\n480\n0\nfalse\nfalse\nfalse\n"
+        optimized_display_config = (
+            "EXPLICIT_FULLSCREEN=false\n"
+            "HEIGHT=480\n"
+            "WIDTH=640\n"
+            "MAX_FPS=60\n"
+            "W_FULLSCREEN=false\n"
+        )
         try:
-            if os.path.isfile(display_config):
-                with open(display_config, "r", encoding="utf-8") as f:
-                    if f.read() == forced_uncapped_config:
-                        os.remove(display_config)
-                        logger.info("[LAUNCH] Removed stale uncapped display config.")
+            with open(display_config, "w", encoding="utf-8") as f:
+                f.write(optimized_display_config)
+            logger.info("[LAUNCH] Wrote optimized info.displayconfig for VRAM saving.")
         except Exception as e:
-            logger.warning("[LAUNCH] Could not restore display config: %s", e)
+            logger.warning("[LAUNCH] Could not write display config: %s", e)
 
         java_cmd = [
             java_bin,
+            "-Xmx512m", "-Xms512m",         # Heap
+            "-XX:MaxDirectMemorySize=256m", # Native Memory (Textures/Audio)
+            "-Xss256k",                     # Thread Stacks
+            "-XX:ReservedCodeCacheSize=64m",# Code Cache
+            "-XX:MaxMetaspaceSize=128m",    # Metadata (classes)
+            "-XX:+UseSerialGC",             # Garbage Collector
             "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
+            "nogui",
             "--skip-launcher",
             "--mods", "basemod,CommunicationMod,stslib,superfastmode",
         ]
+
+        # java_cmd = [
+        #     java_bin,
+        #     "-Xmx512m", "-Xms512m",
+        #     "-XX:+UseSerialGC",
+        #     "-XX:MaxMetaspaceSize=128m",
+        #     "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
+            # "nogui",
+            # "--skip-launcher",
+            # "--mods", "basemod,CommunicationMod,stslib,superfastmode",
+        # ]
 
         # Wrap in xvfb-run for headless Linux (Colab)
         if self.use_xvfb:
