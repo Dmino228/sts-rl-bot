@@ -39,10 +39,12 @@ class GameProcessManager:
         timeout: float = 120.0,
         worker_dir: Optional[str] = None,
         use_xvfb: bool = False,
+        connection_timeout: float = 300.0,
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
         self.use_xvfb = use_xvfb
+        self.connection_timeout = connection_timeout
         self._last_state: Optional[Dict[str, Any]] = None
 
         # Subprocess handle, logs, and sockets (only set when Python launches the game)
@@ -296,7 +298,8 @@ if __name__ == "__main__":
         self._server_socket.settimeout(0.5)  # Short timeout for polling
         start_wait = time.time()
         connected = False
-        while time.time() - start_wait < 60.0:
+        last_progress_log = start_wait
+        while time.time() - start_wait < self.connection_timeout:
             # Check if the process has crashed/exited
             ret = self._proc.poll()
             if ret is not None:
@@ -315,13 +318,25 @@ if __name__ == "__main__":
 
             try:
                 self._socket, addr = self._server_socket.accept()
-                logger.info("[LAUNCH] Connected to agent_shim on %s", addr)
+                elapsed = time.time() - start_wait
+                logger.info("[LAUNCH] Connected to agent_shim on %s (after %.1fs)", addr, elapsed)
                 # Wrap socket as text streams for readline and write
                 self._stdin_stream = self._socket.makefile("r", encoding="utf-8")
                 self._stdout_stream = self._socket.makefile("w", encoding="utf-8")
                 connected = True
                 break
             except socket.timeout:
+                # Periodic progress logging so the user knows we're still waiting
+                now = time.time()
+                if now - last_progress_log >= 30.0:
+                    elapsed = now - start_wait
+                    remaining = self.connection_timeout - elapsed
+                    logger.info(
+                        "[LAUNCH] Still waiting for agent_shim.py on port %d "
+                        "(%.0fs elapsed, %.0fs remaining)...",
+                        port, elapsed, remaining,
+                    )
+                    last_progress_log = now
                 continue
             except Exception as e:
                 logger.error("[LAUNCH] Error accepting socket connection: %s", e)
@@ -329,9 +344,16 @@ if __name__ == "__main__":
                 raise
 
         if not connected:
-            logger.error("[LAUNCH] Timed out waiting for agent_shim.py to connect on port %d", port)
+            elapsed = time.time() - start_wait
+            logger.error(
+                "[LAUNCH] Timed out after %.0fs waiting for agent_shim.py to connect on port %d",
+                elapsed, port,
+            )
             self.stop()
-            raise TimeoutError(f"Timed out waiting for agent_shim.py to connect on port {port}")
+            raise TimeoutError(
+                f"Timed out after {elapsed:.0f}s waiting for agent_shim.py "
+                f"to connect on port {port}"
+            )
 
     # ──────────────────────────────────────────────────────────────
     # PROTOCOL

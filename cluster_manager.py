@@ -311,8 +311,12 @@ worker_main(
             )
             env_fns.append(_make_env_fn(i, worker_dir, char))
 
-        start_method = "fork" if sys.platform != "win32" else "spawn"
-        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method=start_method))
+        # Always use 'spawn' to prevent fork deadlocks when the parent
+        # process is multi-threaded (TensorFlow/PyTorch create internal
+        # threads).  fork() only copies the calling thread — mutexes held
+        # by other threads remain permanently locked in the child, causing
+        # subprocess.Popen (which calls fork+exec to spawn Java) to hang.
+        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method="spawn"))
 
     # ──────────────────────────────────────────────────────────────
     # CLEANUP

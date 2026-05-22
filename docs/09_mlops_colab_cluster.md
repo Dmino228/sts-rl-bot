@@ -16,11 +16,25 @@ In Colab, you do not need to modify the individual Java execution commands insid
 
 **Cell 1: Install Linux system dependencies**
 ```bash
-!apt-get update
-!apt-get install -y openjdk-11-jre xvfb
+!apt-get update -qq
+!apt-get install -y -qq openjdk-11-jre xvfb \
+    libxrender1 libxtst6 libxi6 libxrandr2 libxcursor1 \
+    libxcomposite1 libasound2 libgl1-mesa-glx libgl1-mesa-dri
 ```
+> **Important:** Use `openjdk-11-jre` (NOT `openjdk-11-jre-headless`).
+> The headless JRE lacks AWT/X11 support, which causes LibGDX/LWJGL to crash even under xvfb.
 
 **Cell 2: Run the training cluster via X Virtual Framebuffer**
 ```bash
-!xvfb-run -a python train_colab.py --num-workers 8 --character IRONCLAD --timesteps 1000000
+!xvfb-run -a python train_colab.py --num-workers 4 --timesteps 1000000
 ```
+> **Note:** `xvfb-run` wraps the parent process. The child Java subprocesses inherit the
+> `DISPLAY` variable and will NOT be nested under additional `xvfb-run` invocations.
+
+### Technical Notes
+- **SubprocVecEnv uses `spawn` (not `fork`)**: TensorFlow/PyTorch create internal threads.
+  `fork()` in a multi-threaded process copies locked mutexes → child deadlocks.
+  `spawn` creates a clean interpreter per child process, avoiding the issue entirely.
+- **Connection timeout is 300s** (5 minutes). Four Java processes running in interpreted
+  mode (`-Xint`) on Colab's 2 shared vCPUs need significant startup time.
+- **Workers must be multiples of 4** to evenly train across all 4 character classes.

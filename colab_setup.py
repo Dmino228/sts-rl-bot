@@ -31,10 +31,12 @@ print(f"✓ Found {ZIP_PATH} ({os.path.getsize(ZIP_PATH) / 1e6:.1f} MB)")
 # Install xvfb (X virtual framebuffer) — required for LibGDX headless rendering.
 # Without this, the Java process crashes with "No X11 DISPLAY variable" on Colab.
 # Also install supporting X11 libraries that LibGDX/LWJGL needs.
+# IMPORTANT: Use openjdk-11-jre (NOT -headless) — the headless variant lacks
+# AWT/X11 support which causes LibGDX to crash even under xvfb.
 
 !apt-get update -qq
-!apt-get install -y -qq xvfb libxrender1 libxtst6 libxi6 libxrandr2 \
-    libxcursor1 libxcomposite1 libasound2 libatk1.0-0 libgtk-3-0 \
+!apt-get install -y -qq openjdk-11-jre xvfb libxrender1 libxtst6 libxi6 \
+    libxrandr2 libxcursor1 libxcomposite1 libasound2 libatk1.0-0 libgtk-3-0 \
     libgl1-mesa-glx libgl1-mesa-dri mesa-utils > /dev/null 2>&1
 !which xvfb-run && echo "✓ xvfb-run installed"
 
