@@ -79,12 +79,18 @@ class GameProcessManager:
         java_bin = os.path.join(game_dir, "jre", "bin", "java")
         if sys.platform == "win32":
             java_bin += ".exe"
-
-        if not os.path.isfile(java_bin):
-            raise FileNotFoundError(
-                f"Java binary not found at {java_bin}. "
-                f"Ensure sts_env_v1.zip was extracted correctly."
-            )
+            if not os.path.isfile(java_bin):
+                raise FileNotFoundError(
+                    f"Java binary not found at {java_bin}. "
+                    f"Ensure sts_env_v1.zip was extracted correctly."
+                )
+        else:
+            # On Linux/macOS, check if system java or local jre exists
+            import shutil
+            if not shutil.which("java") and not os.path.isfile(java_bin):
+                raise FileNotFoundError(
+                    f"Java binary not found (neither system 'java' nor local '{java_bin}')."
+                )
 
         game_dir_abs = os.path.abspath(game_dir)
 
@@ -223,28 +229,46 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("[LAUNCH] Could not write display config: %s", e)
 
-        java_cmd = [
-            java_bin,
-            "-Xmx256m", "-Xms128m",         # Heap
-            "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
-            "-Xss256k",                     # Thread Stacks
-            "-XX:ReservedCodeCacheSize=16m",# Code Cache
-            "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
-            "-XX:+UseSerialGC",             # Garbage Collector
-            "-Xint",
-            "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
-            "nogui",
-            "--skip-launcher",
-            "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-        ]
+        if sys.platform != "win32":
+            java_cmd = [
+                "java",
+                "-Xmx256m", "-Xms128m",
+                "-XX:MaxDirectMemorySize=128m",
+                "-Xss256k",
+                "-XX:ReservedCodeCacheSize=16m",
+                "-XX:MaxMetaspaceSize=64m",
+                "-XX:+UseSerialGC",
+                "-Xint",
+                "-jar", "ModTheSpire.jar",
+                "nogui",
+                "--skip-launcher",
+                "--mods", "basemod,CommunicationMod,stslib,superfastmode",
+            ]
+        else:
+            java_cmd = [
+                java_bin,
+                "-Xmx256m", "-Xms128m",         # Heap
+                "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
+                "-Xss256k",                     # Thread Stacks
+                "-XX:ReservedCodeCacheSize=16m",# Code Cache
+                "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
+                "-XX:+UseSerialGC",             # Garbage Collector
+                "-Xint",
+                "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
+                "nogui",
+                "--skip-launcher",
+                "--mods", "basemod,CommunicationMod,stslib,superfastmode",
+            ]
 
         # Wrap in xvfb-run for headless Linux (Colab)
-        if self.use_xvfb:
+        if self.use_xvfb and sys.platform != "win32":
             launch_cmd = [
                 "xvfb-run", "-a",
                 "--server-args=-screen 0 1280x720x24",
             ] + java_cmd
         else:
+            if self.use_xvfb and sys.platform == "win32":
+                logger.warning("[LAUNCH] xvfb-run requested but not supported on Windows. Running without xvfb-run.")
             launch_cmd = java_cmd
 
         logger.info(

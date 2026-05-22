@@ -274,11 +274,8 @@ worker_main(
             )
             env_fns.append(_make_env_fn(i, worker_dir, char))
 
-        logger.info(
-            "[CLUSTER] Creating SubprocVecEnv with %d workers...",
-            self.num_workers,
-        )
-        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method="fork"))
+        start_method = "fork" if sys.platform != "win32" else "spawn"
+        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method=start_method))
 
     # ──────────────────────────────────────────────────────────────
     # CLEANUP

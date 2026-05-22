@@ -5,8 +5,12 @@ This is the Colab counterpart to train.py. Instead of being launched BY
 CommunicationMod, this script IS the parent process that spawns N game
 instances in parallel using ClusterManager.
 
+NOTE: This script MUST be executed via `!xvfb-run -a python train_colab.py`
+on Google Colab/headless Linux to prevent X11 display errors when LibGDX
+initializes OpenGL in headless mode.
+
 Usage (in Colab cell):
-    !python train_colab.py --num-workers 2 --character IRONCLAD --timesteps 500000
+    !xvfb-run -a python train_colab.py --num-workers 2 --character IRONCLAD --timesteps 500000
 """
 
 import sys
@@ -18,17 +22,33 @@ import traceback
 import argparse
 
 # ──────────────────────────────────────────────────────────────
-# PATH SETUP
+# PATH SETUP & GOOGLE DRIVE INTEGRATION
 # ──────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
+# Try to mount Google Drive if running on Google Colab/Linux
+if os.path.exists("/content") or "COLAB_GPU" in os.environ:
+    try:
+        from google.colab import drive
+        if not os.path.exists("/content/drive"):
+            print("Google Colab environment detected. Mounting Google Drive...")
+            drive.mount("/content/drive")
+    except ImportError:
+        pass
+
+# Use Google Drive directory if available, otherwise fallback to local directory
+DRIVE_BASE_DIR = "/content/drive/MyDrive/SlayTheSpireRL"
+if os.path.exists("/content/drive"):
+    BASE_OUTPUT_DIR = DRIVE_BASE_DIR
+else:
+    BASE_OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+LOGS_DIR = os.path.join(BASE_OUTPUT_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 log_file = os.path.join(LOGS_DIR, f"colab_training_{TIMESTAMP}.log")
 
-tensorboard_path = os.path.join(BASE_DIR, "ppo_sts_tensorboard")
-models_path = os.path.join(BASE_DIR, "models")
+tensorboard_path = os.path.join(BASE_OUTPUT_DIR, "ppo_sts_tensorboard")
+models_path = os.path.join(BASE_OUTPUT_DIR, "models")
 os.makedirs(tensorboard_path, exist_ok=True)
 os.makedirs(models_path, exist_ok=True)
 
