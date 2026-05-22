@@ -106,6 +106,29 @@ class GameProcessManager:
 
         game_dir_abs = os.path.abspath(game_dir)
 
+        # ModTheSpire is a *launcher* — it re-launches the game (desktop-1.0.jar)
+        # as a child process using ProcessBuilder("jre/bin/java", ...).
+        # If the bundled JRE only has Windows binaries (java.exe), MTS can't
+        # find jre/bin/java on Linux → falls back to Steam → NullPointerException.
+        # Fix: create a symlink jre/bin/java → system java.
+        if sys.platform != "win32":
+            import shutil as _shutil
+            linux_jre_java = os.path.join(game_dir_abs, "jre", "bin", "java")
+            if not os.path.isfile(linux_jre_java) and not os.path.islink(linux_jre_java):
+                system_java = _shutil.which("java")
+                if system_java:
+                    real_java = os.path.realpath(system_java)
+                    os.makedirs(os.path.dirname(linux_jre_java), exist_ok=True)
+                    try:
+                        os.symlink(real_java, linux_jre_java)
+                        logger.info(
+                            "[LAUNCH] Created symlink jre/bin/java → %s "
+                            "(needed by ModTheSpire's internal game launcher)",
+                            real_java,
+                        )
+                    except OSError as e:
+                        logger.warning("[LAUNCH] Could not create jre/bin/java symlink: %s", e)
+
         # Extract worker_id from worker_dir (default to 0 if not found)
         worker_id = 0
         dirname = os.path.basename(os.path.normpath(game_dir_abs))
