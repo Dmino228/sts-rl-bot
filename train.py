@@ -15,6 +15,14 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 tensorboard_path = os.path.join(BASE_DIR, "ppo_sts_tensorboard")
 models_path = os.path.join(BASE_DIR, "models")
 
+# Cleanup old log files
+for pattern in ["training_*.log", "cluster_training_*.log"]:
+    for f in glob.glob(os.path.join(LOGS_DIR, pattern)):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
 TIMESTAMP = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 log_file = os.path.join(LOGS_DIR, f"training_{TIMESTAMP}.log")
 

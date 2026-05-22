@@ -230,6 +230,7 @@ worker_main(
         """
         from stable_baselines3.common.vec_env import SubprocVecEnv
         from sb3_contrib.common.wrappers import ActionMasker
+        from mask_cache_vec_env import CachedActionMaskVecEnv
 
         if not self._initialized:
             self.initialize_workers(character_schedule=character_schedule)
@@ -241,19 +242,25 @@ worker_main(
 
             def _init():
                 from env import SlayTheSpireEnv
+                from stable_baselines3.common.monitor import Monitor
 
-                env = SlayTheSpireEnv(
+                base_env = SlayTheSpireEnv(
                     character_class=character,
                     worker_dir=worker_dir,
                     use_xvfb=self.use_xvfb,
+                    include_raw_state_in_info=False,
+                    include_action_mask_in_info=True,
                 )
 
                 # Launch the game subprocess (Python-as-parent mode)
-                env.process_manager.launch_game()
-                env.process_manager.signal_ready()
+                base_env.process_manager.launch_game()
+                base_env.process_manager.signal_ready()
+
+                # Monitor tracks episode rewards/lengths for TensorBoard
+                env = Monitor(base_env)
 
                 # Wrap for MaskablePPO
-                return ActionMasker(env, lambda _: env.get_action_mask())
+                return ActionMasker(env, lambda _: base_env.get_action_mask())
 
             return _init
 
@@ -271,7 +278,7 @@ worker_main(
             "[CLUSTER] Creating SubprocVecEnv with %d workers...",
             self.num_workers,
         )
-        return SubprocVecEnv(env_fns, start_method="fork")
+        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method="fork"))
 
     # ──────────────────────────────────────────────────────────────
     # CLEANUP

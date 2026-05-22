@@ -52,6 +52,8 @@ class SlayTheSpireEnv(gym.Env):
         character_class: str = "IRONCLAD",
         worker_dir: Optional[str] = None,
         use_xvfb: bool = False,
+        include_raw_state_in_info: bool = True,
+        include_action_mask_in_info: bool = True,
     ) -> None:
         super().__init__()
 
@@ -65,6 +67,8 @@ class SlayTheSpireEnv(gym.Env):
 
         self.worker_dir = worker_dir
         self.use_xvfb = use_xvfb
+        self.include_raw_state_in_info = include_raw_state_in_info
+        self.include_action_mask_in_info = include_action_mask_in_info
 
         self.process_manager = GameProcessManager(
             timeout=120.0,
@@ -80,6 +84,8 @@ class SlayTheSpireEnv(gym.Env):
         self.observation_space = self.state_encoder.observation_space
 
         self.current_state: Dict[str, Any] = {}
+        self.current_action_mask: Optional[np.ndarray] = None
+        self._mask_state_id: Optional[int] = None
 
         # Reward tracking - V3.2
         self.last_player_hp: Optional[int] = None
@@ -105,6 +111,11 @@ class SlayTheSpireEnv(gym.Env):
         """Wait for the initial game state from CommunicationMod."""
         super().reset(seed=seed)
 
+        # Launch the game subprocess if running in Python-as-parent mode
+        if self.worker_dir is not None and self.process_manager._proc is None:
+            self.process_manager.launch_game()
+            self.process_manager.signal_ready()
+
         try:
             print("Waiting for game state from CommunicationMod...", file=sys.stderr)
 
@@ -126,8 +137,8 @@ class SlayTheSpireEnv(gym.Env):
                 )
                 self._reset_reward_tracking(bootstrap_current=True)
                 obs = self.state_encoder.encode(self.current_state)
-                mask = self.action_masker.get_mask(self.current_state)
-                return obs, {"raw_state": self.current_state, "action_mask": mask}
+                mask = self._refresh_action_mask()
+                return obs, self._make_info(mask)
 
             # Cleanup Loop: navigate through Game Over / Victory / Score screens
             # back to Main Menu where "start" is available.
@@ -136,19 +147,19 @@ class SlayTheSpireEnv(gym.Env):
                 in_game = self.current_state.get("in_game", False)
                 available_cmds = self.current_state.get("available_commands", [])
 
-                print(
-                    f"[reset cleanup #{cleanup_step}] in_game={in_game}, "
-                    f"cmds={available_cmds}",
-                    file=sys.stderr,
-                )
+                # Verbose cleanup logging disabled for performance
+                # print(
+                #     f"[reset cleanup #{cleanup_step}] in_game={in_game}, "
+                #     f"cmds={available_cmds}",
+                #     file=sys.stderr,
+                # )
 
                 if not in_game and "start" in available_cmds:
-                    char_lower = self.character_class.lower()
                     print(
-                        f"At main menu. Sending START {char_lower}...",
+                        f"At main menu. Sending START {self.character_class}...",
                         file=sys.stderr,
                     )
-                    self.process_manager.send_command(f"START {char_lower}")
+                    self.process_manager.send_command(f"START {self.character_class}")
                     break
                 elif "proceed" in available_cmds:
                     self.process_manager.send_command("PROCEED")
@@ -193,8 +204,8 @@ class SlayTheSpireEnv(gym.Env):
         self._reset_reward_tracking(bootstrap_current=False)
 
         obs = self.state_encoder.encode(self.current_state)
-        mask = self.action_masker.get_mask(self.current_state)
-        return obs, {"raw_state": self.current_state, "action_mask": mask}
+        mask = self._refresh_action_mask()
+        return obs, self._make_info(mask)
 
     def step(
         self, action: int
@@ -215,12 +226,14 @@ class SlayTheSpireEnv(gym.Env):
         except Exception as e:
             print(f"Exception during step: {e}", file=sys.stderr)
             mask = np.zeros(self.action_mapper.action_space_size, dtype=np.int8)
+            self.current_action_mask = mask
+            self._mask_state_id = id(self.current_state)
             return (
                 np.zeros(self.state_encoder.shape, dtype=np.float32),
                 0.0,
                 True,
                 False,
-                {"error": str(e), "raw_state": self.current_state, "action_mask": mask},
+                self._make_info(mask, error=str(e)),
             )
 
         # Check for termination
@@ -242,8 +255,8 @@ class SlayTheSpireEnv(gym.Env):
         obs = self.state_encoder.encode(self.current_state)
         reward = self._calculate_reward()
         truncated = False
-        mask = self.action_masker.get_mask(self.current_state)
-        info: Dict[str, Any] = {"raw_state": self.current_state, "action_mask": mask}
+        mask = self._refresh_action_mask()
+        info = self._make_info(mask)
 
         return obs, reward, terminated, truncated, info
 
@@ -256,7 +269,30 @@ class SlayTheSpireEnv(gym.Env):
 
     def get_action_mask(self) -> np.ndarray:
         """Returns the binary mask of valid actions for sb3-contrib ActionMasker."""
-        return self.action_masker.get_mask(self.current_state)
+        if self.current_action_mask is None or self._mask_state_id != id(self.current_state):
+            return self._refresh_action_mask()
+        return self.current_action_mask
+
+    def _refresh_action_mask(self) -> np.ndarray:
+        """Compute and cache the action mask for the current state."""
+        self.current_action_mask = self.action_masker.get_mask(self.current_state)
+        self._mask_state_id = id(self.current_state)
+        return self.current_action_mask
+
+    def _make_info(
+        self,
+        mask: Optional[np.ndarray] = None,
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build Gym info, keeping cluster IPC lean when raw state is not needed."""
+        info: Dict[str, Any] = {}
+        if error is not None:
+            info["error"] = error
+        if self.include_raw_state_in_info:
+            info["raw_state"] = self.current_state
+        if self.include_action_mask_in_info:
+            info["action_mask"] = mask if mask is not None else self.get_action_mask()
+        return info
 
     def _can_soft_reset_at_act_boundary(self, game_state: Dict[str, Any]) -> bool:
         """Return True when reset() should continue from a completed act."""
@@ -502,7 +538,7 @@ class SlayTheSpireEnv(gym.Env):
 
         # Periodic logging
         self.step_count += 1
-        if self.step_count % 50 == 0:
+        if self.step_count % 500 == 0:
             print(
                 f"[REWARD V3.2 #{self.step_count}] r={reward:.3f} | "
                 f"hp={current_hp}/{current_max_hp} floor={current_floor} "
