@@ -27,7 +27,7 @@ import argparse
 # Try to mount Google Drive if running on Google Colab/Linux
 if os.path.exists("/content") or "COLAB_GPU" in os.environ:
     try:
-        from google.colab import drive
+        from google.colab import drive # type: ignore
         if not os.path.exists("/content/drive"):
             print("Google Colab environment detected. Mounting Google Drive...")
             drive.mount("/content/drive")
@@ -82,19 +82,19 @@ def parse_args():
         help="Parent directory for worker dirs.",
     )
     parser.add_argument(
-        "--num-workers", type=int, default=2,
-        help="Number of parallel environment workers.",
+        "--num-workers", type=int, default=4,
+        help="Number of parallel environment workers (recommended multiples of 4).",
     )
     parser.add_argument(
         "--character",
         default="IRONCLAD",
         choices=["IRONCLAD", "SILENT", "DEFECT", "WATCHER"],
-        help="Default character class for all workers.",
+        help="Default character class for all workers if in single-character mode.",
     )
     parser.add_argument(
-        "--multi-character",
+        "--single-character",
         action="store_true",
-        help="Cycle through all 4 characters across workers.",
+        help="Train only the default character instead of cycling all 4.",
     )
     parser.add_argument(
         "--timesteps", type=int, default=500_000,
@@ -121,7 +121,7 @@ def main():
 
     train_logger.info("=" * 60)
     train_logger.info("Colab MaskablePPO Training — session %s", TIMESTAMP)
-    train_logger.info("Workers: %d | Character: %s | Timesteps: %d",
+    train_logger.info("Workers: %d | Default Character: %s | Timesteps: %d",
                       args.num_workers, args.character, args.timesteps)
     train_logger.info("Log file: %s", log_file)
     train_logger.info("=" * 60)
@@ -136,7 +136,7 @@ def main():
 
     # ── 2. Build character schedule ──
     characters = ["IRONCLAD", "SILENT", "DEFECT", "WATCHER"]
-    if args.multi_character:
+    if not args.single_character:
         character_schedule = [
             characters[i % len(characters)]
             for i in range(args.num_workers)
