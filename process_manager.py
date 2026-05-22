@@ -84,10 +84,20 @@ class GameProcessManager:
                     f"Java binary not found at {java_bin}. "
                     f"Ensure sts_env_v1.zip was extracted correctly."
                 )
+            java_executable = java_bin
         else:
-            # On Linux/macOS, check if system java or local jre exists
+            # On Linux/macOS, prefer the bundled JRE if it exists, otherwise fall back to system 'java'
             import shutil
-            if not shutil.which("java") and not os.path.isfile(java_bin):
+            if os.path.isfile(java_bin):
+                try:
+                    os.chmod(java_bin, 0o755)
+                except Exception:
+                    pass
+                java_executable = java_bin
+            elif shutil.which("java"):
+                logger.warning("[LAUNCH] Bundled Linux JRE not found at %s. Falling back to system 'java'. This may cause headless compatibility issues.", java_bin)
+                java_executable = "java"
+            else:
                 raise FileNotFoundError(
                     f"Java binary not found (neither system 'java' nor local '{java_bin}')."
                 )
@@ -229,36 +239,20 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("[LAUNCH] Could not write display config: %s", e)
 
-        if sys.platform != "win32":
-            java_cmd = [
-                "java",
-                "-Xmx256m", "-Xms128m",
-                "-XX:MaxDirectMemorySize=128m",
-                "-Xss256k",
-                "-XX:ReservedCodeCacheSize=16m",
-                "-XX:MaxMetaspaceSize=64m",
-                "-XX:+UseSerialGC",
-                "-Xint",
-                "-jar", "ModTheSpire.jar",
-                "nogui",
-                "--skip-launcher",
-                "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-            ]
-        else:
-            java_cmd = [
-                java_bin,
-                "-Xmx256m", "-Xms128m",         # Heap
-                "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
-                "-Xss256k",                     # Thread Stacks
-                "-XX:ReservedCodeCacheSize=16m",# Code Cache
-                "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
-                "-XX:+UseSerialGC",             # Garbage Collector
-                "-Xint",
-                "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
-                "nogui",
-                "--skip-launcher",
-                "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-            ]
+        java_cmd = [
+            java_executable,
+            "-Xmx256m", "-Xms128m",         # Heap
+            "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
+            "-Xss256k",                     # Thread Stacks
+            "-XX:ReservedCodeCacheSize=16m",# Code Cache
+            "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
+            "-XX:+UseSerialGC",             # Garbage Collector
+            "-Xint",
+            "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
+            "nogui",
+            "--skip-launcher",
+            "--mods", "basemod,CommunicationMod,stslib,superfastmode",
+        ]
 
         # Wrap in xvfb-run for headless Linux (Colab)
         # Skip nested xvfb-run if DISPLAY environment variable is already set (e.g. parent process is already run via xvfb-run)
@@ -298,15 +292,43 @@ if __name__ == "__main__":
 
         logger.info("[LAUNCH] Game PID: %s. Waiting for agent_shim.py to connect on port %d...", self._proc.pid, port)
 
-        # Wait for agent_shim.py to connect via TCP
-        self._server_socket.settimeout(60.0)  # 60 seconds timeout
-        try:
-            self._socket, addr = self._server_socket.accept()
-            logger.info("[LAUNCH] Connected to agent_shim on %s", addr)
-            # Wrap socket as text streams for readline and write
-            self._stdin_stream = self._socket.makefile("r", encoding="utf-8")
-            self._stdout_stream = self._socket.makefile("w", encoding="utf-8")
-        except socket.timeout:
+        # Wait for agent_shim.py to connect via TCP, checking if the process crashes immediately
+        self._server_socket.settimeout(0.5)  # Short timeout for polling
+        start_wait = time.time()
+        connected = False
+        while time.time() - start_wait < 60.0:
+            # Check if the process has crashed/exited
+            ret = self._proc.poll()
+            if ret is not None:
+                # Read some stderr to show why it crashed
+                stderr_content = ""
+                try:
+                    stderr_log_path = os.path.join(game_dir, "stderr.log")
+                    if os.path.exists(stderr_log_path):
+                        with open(stderr_log_path, "r", encoding="utf-8") as sf:
+                            stderr_content = sf.read()
+                except Exception:
+                    pass
+                logger.error("[LAUNCH] Game process exited unexpectedly with code %d. Stderr:\n%s", ret, stderr_content)
+                self.stop()
+                raise RuntimeError(f"Game process exited unexpectedly with code {ret}. Stderr: {stderr_content}")
+
+            try:
+                self._socket, addr = self._server_socket.accept()
+                logger.info("[LAUNCH] Connected to agent_shim on %s", addr)
+                # Wrap socket as text streams for readline and write
+                self._stdin_stream = self._socket.makefile("r", encoding="utf-8")
+                self._stdout_stream = self._socket.makefile("w", encoding="utf-8")
+                connected = True
+                break
+            except socket.timeout:
+                continue
+            except Exception as e:
+                logger.error("[LAUNCH] Error accepting socket connection: %s", e)
+                self.stop()
+                raise
+
+        if not connected:
             logger.error("[LAUNCH] Timed out waiting for agent_shim.py to connect on port %d", port)
             self.stop()
             raise TimeoutError(f"Timed out waiting for agent_shim.py to connect on port {port}")

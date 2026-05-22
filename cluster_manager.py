@@ -72,6 +72,36 @@ class ClusterManager:
         """Return the absolute path for a given worker directory."""
         return os.path.join(self.workspace_dir, f"worker_{worker_id}")
 
+    def _is_worker_valid(self, worker_dir: str) -> bool:
+        """Check if the worker directory contains all critical files."""
+        if not os.path.exists(worker_dir):
+            return False
+
+        # Expected Java path in the worker directory based on platform
+        java_bin = os.path.join(worker_dir, "jre", "bin", "java")
+        base_java_bin = os.path.join(self.base_env_dir, "jre", "bin", "java")
+        if sys.platform == "win32":
+            java_bin += ".exe"
+            base_java_bin += ".exe"
+
+        # Check if the base environment has a bundled JRE for this platform
+        has_bundled_jre_in_base = os.path.isfile(base_java_bin)
+
+        if has_bundled_jre_in_base and not os.path.isfile(java_bin):
+            return False
+
+        critical_files = [
+            os.path.join(worker_dir, "ModTheSpire.jar"),
+            os.path.join(worker_dir, "desktop-1.0.jar"),
+            os.path.join(worker_dir, "mods", "CommunicationMod.jar"),
+        ]
+
+        for f in critical_files:
+            if not os.path.isfile(f):
+                return False
+
+        return True
+
     def initialize_workers(
         self,
         force_rebuild: bool = False,
@@ -106,13 +136,20 @@ class ClusterManager:
                 else self.character_class
             )
 
+            is_valid = self._is_worker_valid(worker_dir)
+
             if os.path.exists(worker_dir):
-                if force_rebuild:
-                    logger.info("[CLUSTER] Removing existing worker_%d ...", i)
+                if force_rebuild or not is_valid:
+                    if not is_valid:
+                        logger.warning(
+                            "[CLUSTER] worker_%d exists but is missing critical files. Rebuilding...", i
+                        )
+                    else:
+                        logger.info("[CLUSTER] Removing existing worker_%d ...", i)
                     shutil.rmtree(worker_dir)
                 else:
                     logger.info(
-                        "[CLUSTER] worker_%d already exists, skipping copy.", i
+                        "[CLUSTER] worker_%d already exists and is valid, skipping copy.", i
                     )
                     self._patch_communicationmod_config(worker_dir, i)
                     self.worker_dirs.append(worker_dir)

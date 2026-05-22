@@ -17,7 +17,7 @@ In Colab, you do not need to modify the individual Java execution commands insid
 **Cell 1: Install Linux system dependencies**
 ```bash
 !apt-get update
-!apt-get install -y openjdk-11-jre-headless xvfb
+!apt-get install -y openjdk-11-jre xvfb
 ```
 
 **Cell 2: Run the training cluster via X Virtual Framebuffer**
