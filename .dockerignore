@@ -1,0 +1,12 @@
+.git
+.venv
+.pytest_cache
+cluster_workers/
+logs/
+models/
+ppo_sts_tensorboard/
+sts_env_v1.zip
+SlayTheSpire.log
+*.pyc
+__pycache__/
+.vscode/

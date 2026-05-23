@@ -17,14 +17,23 @@ Architecture:
   └──────────────┘
 """
 
-import os
 import sys
+# Remove cv2 from sys.path to prevent it from hijacking standard imports like 'typing'
+sys.path = [p for p in sys.path if not p.endswith('cv2') and not p.endswith('cv2/')]
+import typing
+import os
 import shutil
 import logging
 import time
 from typing import Optional, List, Callable, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Environment variable overrides for headless software rendering on Linux
+if sys.platform != "win32":
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+    os.environ["MESA_GLSL_VERSION_OVERRIDE"] = "330"
 
 
 class ClusterManager:
@@ -114,6 +123,12 @@ class ClusterManager:
                     logger.info(
                         "[CLUSTER] worker_%d already exists, skipping copy.", i
                     )
+                    # On Linux, ensure the JRE folder in the worker matches the master env (which contains the Linux shim)
+                    if sys.platform != "win32":
+                        worker_jre = os.path.join(worker_dir, "jre")
+                        if os.path.exists(worker_jre):
+                            shutil.rmtree(worker_jre)
+                        shutil.copytree(os.path.join(self.base_env_dir, "jre"), worker_jre, dirs_exist_ok=True)
                     self._patch_communicationmod_config(worker_dir, i)
                     self.worker_dirs.append(worker_dir)
                     continue
@@ -274,11 +289,18 @@ worker_main(
             )
             env_fns.append(_make_env_fn(i, worker_dir, char))
 
+        # Use spawn method for SubprocVecEnv on both Windows and Linux container to ensure safety with OpenJDK
+        if sys.platform == "win32":
+            start_method = "spawn"
+        else:
+            start_method = "spawn"
+
         logger.info(
-            "[CLUSTER] Creating SubprocVecEnv with %d workers...",
+            "[CLUSTER] Creating SubprocVecEnv with %d workers (start method: %s)...",
             self.num_workers,
+            start_method,
         )
-        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method="fork"))
+        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method=start_method))
 
     # ──────────────────────────────────────────────────────────────
     # CLEANUP

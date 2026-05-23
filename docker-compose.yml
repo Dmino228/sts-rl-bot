@@ -1,0 +1,19 @@
+services:
+  sts_rl_trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sts_rl_trainer
+    ipc: host # Essential for PyTorch multi-process shared memory performance
+    volumes:
+      - ./models:/workspace/models
+      - ./ppo_sts_tensorboard:/workspace/ppo_sts_tensorboard
+      - ./cluster_workers:/workspace/cluster_workers
+      - ./logs:/workspace/logs
+    environment:
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - MESA_GL_VERSION_OVERRIDE=3.3
+      - MESA_GLSL_VERSION_OVERRIDE=330
+      - DISPLAY=:99
+    # Run the parallel cluster with 4 workers for 1M timesteps by default
+    command: ["--workers", "4", "--timesteps", "1000000"]

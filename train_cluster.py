@@ -7,6 +7,9 @@ assignment, directory cloning/isolation, and clean teardown.
 """
 
 import sys
+# Remove cv2 from sys.path to prevent it from hijacking standard imports like 'typing'
+sys.path = [p for p in sys.path if not p.endswith('cv2') and not p.endswith('cv2/')]
+import typing
 import os
 import glob
 import stat
@@ -18,6 +21,12 @@ import traceback
 import multiprocessing
 import time
 from typing import List, Callable
+
+# Environment variable overrides for headless software rendering on Linux
+if sys.platform != "win32":
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+    os.environ["MESA_GLSL_VERSION_OVERRIDE"] = "330"
 
 # Setup centralized logging
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -261,6 +270,18 @@ def main():
                 shutil.copytree(args.base_env_dir, worker_dir, dirs_exist_ok=True)
             else:
                 logger.info("Worker_%d directory already exists. Skipping copy.", i)
+                # On Linux, ensure the JRE folder in the worker matches the master env (which contains the Linux shim)
+                if sys.platform != "win32":
+                    worker_jre = os.path.join(worker_dir, "jre")
+                    def remove_readonly(func, path, excinfo):
+                        try:
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                        except Exception:
+                            pass
+                    if os.path.exists(worker_jre):
+                        shutil.rmtree(worker_jre, onerror=remove_readonly)
+                    shutil.copytree(os.path.join(args.base_env_dir, "jre"), worker_jre, dirs_exist_ok=True)
         else:
             logger.info("Creating worker_%d directory...", i)
             os.makedirs(worker_dir, exist_ok=True)
@@ -299,8 +320,11 @@ def main():
         logger.info("Creating ThreadedVecEnv with %d workers...", args.workers)
         vec_env_base = ThreadedVecEnv(env_fns)
     else:
-        # Linux supports 'fork' (much faster startup); Windows/macOS MUST use 'spawn'.
-        start_method = "fork" if sys.platform != "win32" else "spawn"
+        # Use spawn method for SubprocVecEnv on both Windows and Linux container to ensure safety with OpenJDK
+        if sys.platform == "win32":
+            start_method = "spawn"
+        else:
+            start_method = "spawn"
         logger.info(
             "Creating SubprocVecEnv with %d workers (start method: %s)...",
             args.workers,
@@ -330,15 +354,34 @@ def main():
         ),
     ])
 
-    # Initialize model
-    logger.info("Initializing MaskablePPO model...")
-    model = MaskablePPO(
-        "MlpPolicy",
-        vec_env,
-        verbose=1,
-        n_steps=args.n_steps,
-        tensorboard_log=tensorboard_path,
-    )
+    # Initialize or Load Model
+    final_model_path = os.path.join(models_path, "ppo_sts_cluster_final.zip")
+    checkpoints = glob.glob(os.path.join(models_path, "ppo_sts_cluster_*_steps.zip"))
+
+    if os.path.exists(final_model_path):
+        latest_model = final_model_path
+    elif checkpoints:
+        latest_model = max(checkpoints, key=os.path.getmtime)
+    else:
+        latest_model = None
+
+    if latest_model:
+        logger.info("Loading existing model checkpoint from %s...", latest_model)
+        model = MaskablePPO.load(
+            latest_model,
+            env=vec_env,
+            custom_objects={"n_steps": args.n_steps},
+            tensorboard_log=tensorboard_path,
+        )
+    else:
+        logger.info("Initializing brand new MaskablePPO model...")
+        model = MaskablePPO(
+            "MlpPolicy",
+            vec_env,
+            verbose=1,
+            n_steps=args.n_steps,
+            tensorboard_log=tensorboard_path,
+        )
 
     # Centralize logger output
     custom_logger = configure(tensorboard_path, ["tensorboard", "csv", "stdout"])
@@ -350,6 +393,7 @@ def main():
         model.learn(
             total_timesteps=args.timesteps,
             callback=callbacks,
+            reset_num_timesteps=False,
         )
         logger.info("Training finished successfully!")
     except KeyboardInterrupt:

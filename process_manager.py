@@ -12,6 +12,9 @@ Commands are plain text, NOT JSON. e.g. "START ironclad", "PLAY 1 0", "END"
 """
 
 import sys
+# Remove cv2 from sys.path to prevent it from hijacking standard imports like 'typing'
+sys.path = [p for p in sys.path if not p.endswith('cv2') and not p.endswith('cv2/')]
+import typing
 import os
 import json
 import time
@@ -22,6 +25,13 @@ import socket
 from typing import Optional, Dict, Any, IO
 
 logger = logging.getLogger(__name__)
+
+# Environment variable overrides for headless software rendering on Linux
+if sys.platform != "win32":
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+    os.environ["MESA_GLSL_VERSION_OVERRIDE"] = "330"
+
 
 
 class GameProcessManager:
@@ -76,17 +86,19 @@ class GameProcessManager:
             )
 
         game_dir = self.worker_dir
-        java_bin = os.path.join(game_dir, "jre", "bin", "java")
-        if sys.platform == "win32":
-            java_bin += ".exe"
-
-        if not os.path.isfile(java_bin):
-            raise FileNotFoundError(
-                f"Java binary not found at {java_bin}. "
-                f"Ensure sts_env_v1.zip was extracted correctly."
-            )
-
         game_dir_abs = os.path.abspath(game_dir)
+
+        if sys.platform == "win32":
+            java_bin = os.path.join(game_dir, "jre", "bin", "java.exe")
+            if not os.path.isfile(java_bin):
+                raise FileNotFoundError(
+                    f"Java binary not found at {java_bin}. "
+                    f"Ensure sts_env_v1.zip was extracted correctly."
+                )
+        else:
+            # Headless Java OpenJDK 8 on Linux (Docker)
+            java_bin = "java"
+
 
         # Extract worker_id from worker_dir (default to 0 if not found)
         worker_id = 0
@@ -173,6 +185,12 @@ if __name__ == "__main__":
         else:
             env["PATH"] = python_dir
 
+        if sys.platform != "win32":
+            env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+            env["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+            env["MESA_GLSL_VERSION_OVERRIDE"] = "330"
+            env["GALLIUM_DRIVER"] = "softpipe"
+
         # Write config.properties inside local appdata/config directories to force
         # CommunicationMod to run at startup with our agent_shim.py command
         config_dirs = [
@@ -223,20 +241,43 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("[LAUNCH] Could not write display config: %s", e)
 
-        java_cmd = [
-            java_bin,
-            "-Xmx256m", "-Xms128m",         # Heap
-            "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
-            "-Xss256k",                     # Thread Stacks
-            "-XX:ReservedCodeCacheSize=16m",# Code Cache
-            "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
-            "-XX:+UseSerialGC",             # Garbage Collector
-            "-Xint",
-            "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
-            "nogui",
-            "--skip-launcher",
-            "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-        ]
+        if sys.platform == "win32":
+            java_cmd = [
+                java_bin,
+                f"-Duser.home={game_dir_abs}",
+                "-Xmx256m", "-Xms128m",         # Heap
+                "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
+                "-Xss256k",                     # Thread Stacks
+                "-XX:ReservedCodeCacheSize=16m",# Code Cache
+                "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
+                "-XX:+UseSerialGC",             # Garbage Collector
+                "-Xint",
+                "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
+                "nogui",
+                "--skip-launcher",
+                "--mods", "basemod,CommunicationMod,stslib,superfastmode",
+            ]
+        else:
+            # HEADLESS LINUX/DOCKER
+            java_cmd = [
+                java_bin,
+                f"-Duser.home={game_dir_abs}",
+                "-Xmx256m", "-Xms128m",         # Heap
+                "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
+                "-Xss256k",                     # Thread Stacks
+                "-XX:ReservedCodeCacheSize=16m",# Code Cache
+                "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
+                "-XX:+UseSerialGC",             # Garbage Collector
+                "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
+                "-Dorg.lwjgl.opengl.Display.enableHighDPI=false",
+                "-Dorg.lwjgl.util.NoChecks=true",
+                # "-Xint",
+                "-Dorg.lwjgl.openal.libname=/dev/null",
+                "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
+                "nogui",
+                "--skip-launcher",
+                "--mods", "basemod,CommunicationMod,stslib,superfastmode",
+            ]
 
         # Wrap in xvfb-run for headless Linux (Colab)
         if self.use_xvfb:
@@ -272,7 +313,7 @@ if __name__ == "__main__":
         logger.info("[LAUNCH] Game PID: %s. Waiting for agent_shim.py to connect on port %d...", self._proc.pid, port)
 
         # Wait for agent_shim.py to connect via TCP
-        self._server_socket.settimeout(60.0)  # 60 seconds timeout
+        self._server_socket.settimeout(300.0)  # 300 seconds timeout
         try:
             self._socket, addr = self._server_socket.accept()
             logger.info("[LAUNCH] Connected to agent_shim on %s", addr)

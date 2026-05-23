@@ -5,10 +5,13 @@ This environment does NOT launch the game. CommunicationMod launches us.
 We communicate via stdin (receive JSON state) and stdout (send commands).
 """
 
+import sys
+# Remove cv2 from sys.path to prevent it from hijacking standard imports like 'typing'
+sys.path = [p for p in sys.path if not p.endswith('cv2') and not p.endswith('cv2/')]
+import typing
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import sys
 from typing import Optional, Tuple, Dict, Any, List
 
 from process_manager import GameProcessManager
