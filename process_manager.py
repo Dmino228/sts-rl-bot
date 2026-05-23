@@ -104,11 +104,25 @@ class GameProcessManager:
             else:
                 # Search /usr/lib/jvm/ for a JRE that has libawt_xawt.so
                 # (present only in non-headless JRE packages).
+                # We prioritize Java 8 (1.8) because ModTheSpire's internal re-launcher
+                # does not forward modules configuration flags, causing classloading crashes on Java 11+.
                 headful_java = None
-                for jvm_dir in sorted(_glob.glob("/usr/lib/jvm/java-*-openjdk-*")):
+                candidates_dirs = sorted(_glob.glob("/usr/lib/jvm/java-*-openjdk-*"))
+
+                # Prioritize paths containing "8" or "1.8"
+                java8_dirs = [d for d in candidates_dirs if "8" in os.path.basename(d) or "1.8" in os.path.basename(d)]
+                other_dirs = [d for d in candidates_dirs if "8" not in os.path.basename(d) and "1.8" not in os.path.basename(d)]
+
+                for jvm_dir in java8_dirs + other_dirs:
                     candidate = os.path.join(jvm_dir, "bin", "java")
-                    awt_lib = os.path.join(jvm_dir, "lib", "libawt_xawt.so")
-                    if os.path.isfile(candidate) and os.path.isfile(awt_lib):
+                    # On Java 8, libawt_xawt.so can be under jre/lib/amd64/ or lib/amd64/
+                    # Let's check typical paths for Java 8 and Java 11+
+                    awt_paths = [
+                        os.path.join(jvm_dir, "lib", "libawt_xawt.so"),
+                        os.path.join(jvm_dir, "jre", "lib", "amd64", "libawt_xawt.so"),
+                        os.path.join(jvm_dir, "lib", "amd64", "libawt_xawt.so"),
+                    ]
+                    if os.path.isfile(candidate) and any(os.path.isfile(p) for p in awt_paths):
                         headful_java = candidate
                         break
 
