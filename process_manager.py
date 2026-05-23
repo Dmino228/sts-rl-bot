@@ -367,17 +367,15 @@ if __name__ == "__main__":
         ])
 
         # Wrap in xvfb-run for headless Linux (Colab)
-        # Skip nested xvfb-run if DISPLAY environment variable is already set (e.g. parent process is already run via xvfb-run)
-        if self.use_xvfb and sys.platform != "win32" and "DISPLAY" not in os.environ:
+        # We always force xvfb-run on Linux if use_xvfb is True, ignoring existing DISPLAY variables
+        if self.use_xvfb and sys.platform != "win32":
             launch_cmd = [
                 "xvfb-run", "-a",
-                "--server-args=-screen 0 1280x720x24",
+                "-s", "-screen 0 1024x768x24 -ac +extension RANDR",
             ] + java_cmd
         else:
             if self.use_xvfb and sys.platform == "win32":
                 logger.warning("[LAUNCH] xvfb-run requested but not supported on Windows. Running without xvfb-run.")
-            elif self.use_xvfb and sys.platform != "win32" and "DISPLAY" in os.environ:
-                logger.info("[LAUNCH] DISPLAY environment variable is already set (DISPLAY=%s). Skipping nested xvfb-run wrapper.", os.environ.get("DISPLAY"))
             launch_cmd = java_cmd
 
         logger.info(
