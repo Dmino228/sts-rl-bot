@@ -37,7 +37,7 @@ print(f"✓ Found {ZIP_PATH} ({os.path.getsize(ZIP_PATH) / 1e6:.1f} MB)")
 !apt-get update -qq
 !apt-get install -y -qq openjdk-8-jre xvfb libxrender1 libxtst6 libxi6 \
     libxrandr2 libxcursor1 libxcomposite1 libasound2 libatk1.0-0 libgtk-3-0 \
-    libgl1-mesa-glx libgl1-mesa-dri mesa-utils > /dev/null 2>&1
+    libgl1-mesa-glx libgl1-mesa-dri mesa-utils libglu1-mesa x11-xserver-utils > /dev/null 2>&1
 !which xvfb-run && echo "✓ xvfb-run installed"
 
 

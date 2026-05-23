@@ -270,6 +270,12 @@ if __name__ == "__main__":
         else:
             env["PATH"] = python_dir
 
+        # Force software rendering and override OpenGL versions on Linux to avoid driver issues
+        if sys.platform != "win32":
+            env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+            env["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+            env["MESA_GLSL_VERSION_OVERRIDE"] = "330"
+
         # Write config.properties inside local appdata/config directories to force
         # CommunicationMod to run at startup with our agent_shim.py command
         config_dirs = [
@@ -351,9 +357,14 @@ if __name__ == "__main__":
             # Fix ModTheSpire classloading/reflection issue on Java 9+ (definePackageInternal)
             java_cmd.extend(["--add-opens", "java.base/java.net=ALL-UNNAMED"])
 
-        # Enable software rendering fallback for LWJGL on Linux/macOS
+        # Enable software rendering fallback and disable audio/checks for LWJGL on Linux/macOS
         if sys.platform != "win32":
-            java_cmd.append("-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true")
+            java_cmd.extend([
+                "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
+                "-Dorg.lwjgl.opengl.Display.enableHighDPI=false",
+                "-Dorg.lwjgl.util.NoChecks=true",
+                "-Dorg.lwjgl.openal.libname=/dev/null",
+            ])
 
         # Note: Do NOT add "-Djava.awt.headless=true". ModTheSpire uses AWT/Swing
         # internally and will crash with HeadlessException. We run via xvfb-run
@@ -371,7 +382,7 @@ if __name__ == "__main__":
         if self.use_xvfb and sys.platform != "win32":
             launch_cmd = [
                 "xvfb-run", "-a",
-                "-s", "-screen 0 1024x768x24 -ac +extension RANDR",
+                "-s", "-screen 0 1024x768x16 -ac +extension RANDR",
             ] + java_cmd
         else:
             if self.use_xvfb and sys.platform == "win32":

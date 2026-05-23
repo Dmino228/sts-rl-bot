@@ -19,7 +19,8 @@ In Colab, you do not need to modify the individual Java execution commands insid
 !apt-get update -qq
 !apt-get install -y -qq openjdk-8-jre xvfb \
     libxrender1 libxtst6 libxi6 libxrandr2 libxcursor1 \
-    libxcomposite1 libasound2 libgl1-mesa-glx libgl1-mesa-dri
+    libxcomposite1 libasound2 libgl1-mesa-glx libgl1-mesa-dri \
+    libglu1-mesa x11-xserver-utils
 ```
 > **Important:** Use `openjdk-8-jre` (NOT `openjdk-8-jre-headless`).
 > The headless JRE lacks AWT/X11 support, which causes LibGDX/LWJGL to crash even under xvfb.
