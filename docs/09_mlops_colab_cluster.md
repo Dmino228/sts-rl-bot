@@ -2,7 +2,7 @@
 
 ## Architecture Status
 We have successfully optimized the local cluster (MLOps Local Cluster) to the absolute limits of the JVM engine and the Stable Baselines3 framework.
-- RAM usage per Java process: **~750 MB** (thanks to the `-Xint` flag and off-heap reductions).
+- RAM usage per Java process: **~750-850 MB** (thanks to strict heap, direct memory, stack, and metaspace reductions; note that `-Xint` was removed to prevent native JNI loader SIGBUS crashes on Linux).
 - CPU overhead eliminated by using Python's built-in `makefile` buffers for TCP sockets.
 - Missing `ep_rew_mean` logs fixed by correctly wrapping the environment in the `Monitor` class (bypassing the `__getattr__` bug in Gymnasium).
 
@@ -35,6 +35,6 @@ In Colab, you do not need to modify the individual Java execution commands insid
 - **SubprocVecEnv uses `spawn` (not `fork`)**: TensorFlow/PyTorch create internal threads.
   `fork()` in a multi-threaded process copies locked mutexes → child deadlocks.
   `spawn` creates a clean interpreter per child process, avoiding the issue entirely.
-- **Connection timeout is 300s** (5 minutes). Four Java processes running in interpreted
-  mode (`-Xint`) on Colab's 2 shared vCPUs need significant startup time.
+- **Connection timeout is 300s** (5 minutes). Four Java processes running on Colab's
+  shared vCPUs need significant startup time to fully boot and load all mods.
 - **Workers must be multiples of 4** to evenly train across all 4 character classes.

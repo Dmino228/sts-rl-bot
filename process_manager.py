@@ -306,6 +306,23 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("[LAUNCH] Could not write display config: %s", e)
 
+        # Determine if Java is Java 9 or higher (requires --add-opens java.base/java.net=ALL-UNNAMED)
+        is_java_9_or_higher = False
+        try:
+            version_bytes = subprocess.check_output(
+                [java_executable, "-version"], stderr=subprocess.STDOUT, timeout=2.0
+            )
+            version_str = version_bytes.decode("utf-8", errors="ignore")
+            # Java 8 version string is usually "1.8.0_..." or "openjdk version 1.8.0..."
+            if "version" in version_str:
+                if not any(x in version_str for x in ["1.8.", "1.7.", "1.6."]):
+                    is_java_9_or_higher = True
+        except Exception as e:
+            logger.warning("[LAUNCH] Could not determine Java version: %s", e)
+            # Fallback: assume Java 9+ on non-Windows environments (like Linux Colab)
+            if sys.platform != "win32":
+                is_java_9_or_higher = True
+
         java_cmd = [
             java_executable,
             "-Xmx256m", "-Xms128m",         # Heap
@@ -314,12 +331,26 @@ if __name__ == "__main__":
             "-XX:ReservedCodeCacheSize=16m",# Code Cache
             "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
             "-XX:+UseSerialGC",             # Garbage Collector
-            "-Xint",
+        ]
+
+        if is_java_9_or_higher:
+            # Fix ModTheSpire classloading/reflection issue on Java 9+ (definePackageInternal)
+            java_cmd.extend(["--add-opens", "java.base/java.net=ALL-UNNAMED"])
+
+        # Enable software rendering fallback for LWJGL on Linux/macOS
+        if sys.platform != "win32":
+            java_cmd.append("-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true")
+
+        # Note: Do NOT add "-Djava.awt.headless=true". ModTheSpire uses AWT/Swing
+        # internally and will crash with HeadlessException. We run via xvfb-run
+        # to provide a virtual display instead of running in headless mode.
+
+        java_cmd.extend([
             "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
             "nogui",
             "--skip-launcher",
             "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-        ]
+        ])
 
         # Wrap in xvfb-run for headless Linux (Colab)
         # Skip nested xvfb-run if DISPLAY environment variable is already set (e.g. parent process is already run via xvfb-run)
