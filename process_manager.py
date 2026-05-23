@@ -88,21 +88,45 @@ class GameProcessManager:
                 )
             java_executable = java_bin
         else:
-            # On Linux/macOS, prefer the bundled JRE if it exists, otherwise fall back to system 'java'
+            # On Linux/macOS, prefer the bundled JRE if it exists.
+            # Otherwise, search for a NON-HEADLESS system JRE — ModTheSpire
+            # uses AWT/Swing internally and will crash with HeadlessException
+            # if the JRE only has headless libraries.
             import shutil
+            import glob as _glob
+
             if os.path.isfile(java_bin):
                 try:
                     os.chmod(java_bin, 0o755)
                 except Exception:
                     pass
                 java_executable = java_bin
-            elif shutil.which("java"):
-                logger.warning("[LAUNCH] Bundled Linux JRE not found at %s. Falling back to system 'java'. This may cause headless compatibility issues.", java_bin)
-                java_executable = "java"
             else:
-                raise FileNotFoundError(
-                    f"Java binary not found (neither system 'java' nor local '{java_bin}')."
-                )
+                # Search /usr/lib/jvm/ for a JRE that has libawt_xawt.so
+                # (present only in non-headless JRE packages).
+                headful_java = None
+                for jvm_dir in sorted(_glob.glob("/usr/lib/jvm/java-*-openjdk-*")):
+                    candidate = os.path.join(jvm_dir, "bin", "java")
+                    awt_lib = os.path.join(jvm_dir, "lib", "libawt_xawt.so")
+                    if os.path.isfile(candidate) and os.path.isfile(awt_lib):
+                        headful_java = candidate
+                        break
+
+                if headful_java:
+                    logger.info(
+                        "[LAUNCH] Found non-headless system JRE: %s", headful_java
+                    )
+                    java_executable = headful_java
+                elif shutil.which("java"):
+                    logger.warning(
+                        "[LAUNCH] No non-headless JRE found. Falling back to "
+                        "system 'java'. ModTheSpire may crash with HeadlessException."
+                    )
+                    java_executable = "java"
+                else:
+                    raise FileNotFoundError(
+                        f"Java binary not found (neither system 'java' nor local '{java_bin}')."
+                    )
 
         game_dir_abs = os.path.abspath(game_dir)
 
@@ -110,24 +134,42 @@ class GameProcessManager:
         # as a child process using ProcessBuilder("jre/bin/java", ...).
         # If the bundled JRE only has Windows binaries (java.exe), MTS can't
         # find jre/bin/java on Linux → falls back to Steam → NullPointerException.
-        # Fix: create a symlink jre/bin/java → system java.
+        # Fix: create a symlink jre/bin/java → the resolved headful java binary.
         if sys.platform != "win32":
-            import shutil as _shutil
             linux_jre_java = os.path.join(game_dir_abs, "jre", "bin", "java")
-            if not os.path.isfile(linux_jre_java) and not os.path.islink(linux_jre_java):
-                system_java = _shutil.which("java")
-                if system_java:
-                    real_java = os.path.realpath(system_java)
-                    os.makedirs(os.path.dirname(linux_jre_java), exist_ok=True)
-                    try:
-                        os.symlink(real_java, linux_jre_java)
-                        logger.info(
-                            "[LAUNCH] Created symlink jre/bin/java → %s "
-                            "(needed by ModTheSpire's internal game launcher)",
-                            real_java,
-                        )
-                    except OSError as e:
-                        logger.warning("[LAUNCH] Could not create jre/bin/java symlink: %s", e)
+
+            # Resolve the actual path of java_executable for the symlink target
+            if os.path.isabs(java_executable):
+                symlink_target = java_executable
+            else:
+                resolved = shutil.which(java_executable)
+                symlink_target = os.path.realpath(resolved) if resolved else None
+
+            needs_symlink = False
+            if not os.path.exists(linux_jre_java) and not os.path.islink(linux_jre_java):
+                needs_symlink = True
+            elif os.path.islink(linux_jre_java) and symlink_target:
+                # Replace stale symlink if it points to a different java
+                current_target = os.path.realpath(linux_jre_java)
+                if current_target != os.path.realpath(symlink_target):
+                    logger.info(
+                        "[LAUNCH] Replacing stale jre/bin/java symlink "
+                        "(%s → %s)", current_target, symlink_target,
+                    )
+                    os.remove(linux_jre_java)
+                    needs_symlink = True
+
+            if needs_symlink and symlink_target and os.path.isfile(symlink_target):
+                os.makedirs(os.path.dirname(linux_jre_java), exist_ok=True)
+                try:
+                    os.symlink(symlink_target, linux_jre_java)
+                    logger.info(
+                        "[LAUNCH] Created symlink jre/bin/java → %s "
+                        "(needed by ModTheSpire's internal game launcher)",
+                        symlink_target,
+                    )
+                except OSError as e:
+                    logger.warning("[LAUNCH] Could not create jre/bin/java symlink: %s", e)
 
         # Extract worker_id from worker_dir (default to 0 if not found)
         worker_id = 0
