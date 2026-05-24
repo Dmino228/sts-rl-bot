@@ -39,10 +39,12 @@ class GameProcessManager:
         timeout: float = 120.0,
         worker_dir: Optional[str] = None,
         use_xvfb: bool = False,
+        safe_mode: bool = False,
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
         self.use_xvfb = use_xvfb
+        self.safe_mode = safe_mode
         self._last_state: Optional[Dict[str, Any]] = None
 
         # Subprocess handle, logs, and sockets (only set when Python launches the game)
@@ -227,21 +229,26 @@ if __name__ == "__main__":
         worker_tmp_dir = os.path.join(game_dir_abs, "tmp")
         os.makedirs(worker_tmp_dir, exist_ok=True)
 
-        java_cmd = [
-            java_bin,
-            "-Xmx256m", "-Xms128m",         # Heap
-            "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
-            "-Xss1m",                       # Thread Stacks
-            "-XX:ReservedCodeCacheSize=16m",# Code Cache
-            "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
-            "-XX:+UseSerialGC",             # Garbage Collector
-            "-Xint",                        # Interpreter mode to avoid JIT RAM usage
+        java_cmd = [java_bin]
+
+        if not self.safe_mode:
+            java_cmd.extend([
+                "-Xmx256m", "-Xms128m",         # Heap
+                "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
+                "-Xss1m",                       # Thread Stacks
+                "-XX:ReservedCodeCacheSize=16m",# Code Cache
+                "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
+                "-XX:+UseSerialGC",             # Garbage Collector
+                "-Xint",                        # Interpreter mode to avoid JIT RAM usage
+            ])
+
+        java_cmd.extend([
             f"-Djava.io.tmpdir={worker_tmp_dir}",
             "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
             "nogui",
             "--skip-launcher",
             "--mods", "basemod,CommunicationMod,stslib,superfastmode",
-        ]
+        ])
 
         # Wrap in xvfb-run for headless Linux (Colab)
         if self.use_xvfb:

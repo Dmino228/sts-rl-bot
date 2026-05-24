@@ -55,6 +55,7 @@ class SlayTheSpireEnv(gym.Env):
         use_xvfb: bool = False,
         include_raw_state_in_info: bool = True,
         include_action_mask_in_info: bool = True,
+        safe_mode: bool = False,
     ) -> None:
         super().__init__()
 
@@ -75,6 +76,7 @@ class SlayTheSpireEnv(gym.Env):
             timeout=120.0,
             worker_dir=worker_dir,
             use_xvfb=use_xvfb,
+            safe_mode=safe_mode,
         )
 
         self.action_mapper = ActionMapper()

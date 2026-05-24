@@ -72,6 +72,10 @@ def parse_args():
         help="Wrap Java launch in xvfb-run (required on headless Linux).",
     )
     parser.add_argument(
+        "--safe-mode", action="store_true",
+        help="Ignore Java arguments aimed at reducing RAM usage.",
+    )
+    parser.add_argument(
         "--force-rebuild", action="store_true",
         help="Force rebuild of worker directories (delete and copy again).",
     )
@@ -125,6 +129,7 @@ def make_env(
     worker_dir: str,
     use_xvfb: bool,
     debug_env_info: bool,
+    safe_mode: bool,
 ) -> Callable:
     """Closure factory to create a single wrapped environment."""
     def _init():
@@ -139,6 +144,7 @@ def make_env(
             use_xvfb=use_xvfb,
             include_raw_state_in_info=debug_env_info,
             include_action_mask_in_info=True,
+            safe_mode=safe_mode,
         )
         # Monitor must wrap BEFORE ActionMasker so that info["episode"]
         # (populated on done=True) propagates through VecEnv to SB3's logger.
@@ -271,6 +277,7 @@ def main():
                 worker_dir,
                 args.use_xvfb,
                 args.debug_env_info,
+                args.safe_mode,
             )
         )
 
