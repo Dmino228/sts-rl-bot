@@ -70,6 +70,7 @@ class GameProcessManager:
             mods/CommunicationMod.jar  (+ BaseMod, StSLib, etc.)
             preferences/
         """
+        self.stop()
         if self.worker_dir is None:
             raise RuntimeError(
                 "launch_game() requires worker_dir to be set."
@@ -417,3 +418,7 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error("[STOP] Error closing stderr file: %s", e)
             self._stderr_file = None
+
+    def terminate(self) -> None:
+        """Terminate the game process and release all network resources."""
+        self.stop()

@@ -24,14 +24,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# Cleanup old log files
-for pattern in ["training_*.log", "cluster_training_*.log"]:
-    for f in glob.glob(os.path.join(LOGS_DIR, pattern)):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 log_file = os.path.join(LOGS_DIR, f"cluster_training_{TIMESTAMP}.log")
 
@@ -311,7 +303,7 @@ def main():
     vec_env = CachedActionMaskVecEnv(vec_env_base)
 
     # 4. Centralized TensorBoard and model checkpoint configuration
-    tensorboard_path = os.path.join(BASE_DIR, "logs", "ppo_sts_cluster")
+    tensorboard_path = os.path.join(BASE_DIR, "logs", f"ppo_run_{TIMESTAMP}")
     models_path = os.path.join(BASE_DIR, "models")
     os.makedirs(models_path, exist_ok=True)
 
@@ -330,15 +322,35 @@ def main():
         ),
     ])
 
-    # Initialize model
-    logger.info("Initializing MaskablePPO model...")
-    model = MaskablePPO(
-        "MlpPolicy",
-        vec_env,
-        verbose=1,
-        n_steps=args.n_steps,
-        tensorboard_log=tensorboard_path,
-    )
+    # Initialize or Load Model
+    final_model_path = os.path.join(models_path, "ppo_sts_cluster_final.zip")
+    checkpoints = glob.glob(os.path.join(models_path, "ppo_sts_cluster_*_steps.zip"))
+
+    if os.path.exists(final_model_path):
+        latest_model = final_model_path
+    elif checkpoints:
+        latest_model = max(checkpoints, key=os.path.getmtime)
+    else:
+        latest_model = None
+
+    if latest_model:
+        logger.info("Loading model from %s ...", latest_model)
+        model = MaskablePPO.load(
+            latest_model,
+            env=vec_env,
+            custom_objects={"n_steps": args.n_steps},
+            tensorboard_log=tensorboard_path
+        )
+        logger.info("Resuming training. Current total timesteps: %d", model.num_timesteps)
+    else:
+        logger.info("Initializing MaskablePPO model...")
+        model = MaskablePPO(
+            "MlpPolicy",
+            vec_env,
+            verbose=1,
+            n_steps=args.n_steps,
+            tensorboard_log=tensorboard_path,
+        )
 
     # Centralize logger output
     custom_logger = configure(tensorboard_path, ["tensorboard", "csv", "stdout"])
@@ -350,6 +362,7 @@ def main():
         model.learn(
             total_timesteps=args.timesteps,
             callback=callbacks,
+            reset_num_timesteps=False,
         )
         logger.info("Training finished successfully!")
     except KeyboardInterrupt:
