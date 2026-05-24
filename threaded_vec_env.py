@@ -145,6 +145,13 @@ class ThreadedVecEnv(VecEnv):
         ]
 
     def _step_env(self, env: gym.Env, action: Any) -> tuple[Any, float, bool, dict[str, Any], dict[str, Any]]:
+        if getattr(env, "needs_lazy_reset", False):
+            # If the env crashed in the previous cycle, we deferred the reset
+            # to give the main thread a window to process Ctrl+C. Now we must
+            # reset it before stepping to satisfy SB3's Monitor wrapper.
+            env.needs_lazy_reset = False
+            env.reset()
+
         observation, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         reset_info: dict[str, Any] = {}
@@ -152,11 +159,11 @@ class ThreadedVecEnv(VecEnv):
         if done:
             info["terminal_observation"] = observation
             if info.get("crashed"):
-                # Don't auto-reset after a crash. The expensive Java
-                # restart (~30s) would block this worker thread and
-                # prevent Ctrl+C from reaching the main thread.
-                # The env will be lazily restarted on the next step().
-                pass  # observation stays as zeros from step()
+                # Defer the expensive Java restart to the next step cycle.
+                # This prevents worker threads from immediately launching Java
+                # when Ctrl+C kills processes, blocking the main thread from
+                # exiting cleanly.
+                env.needs_lazy_reset = True
             else:
                 observation, reset_info = env.reset()
         return observation, reward, done, info, reset_info

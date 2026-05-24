@@ -218,29 +218,6 @@ class SlayTheSpireEnv(gym.Env):
         Returns:
             (obs, reward, terminated, truncated, info)
         """
-        # Lazy restart: if the process was killed by a previous crash cycle,
-        # restart it now. This is deferred from VecEnv's auto-reset (which
-        # skips reset on crash) to give the main thread a window to handle
-        # Ctrl+C between step cycles.
-        if self.worker_dir is not None and self.process_manager._proc is None:
-            try:
-                obs, info = self.reset()
-                mask = self._refresh_action_mask()
-                return obs, 0.0, False, False, self._make_info(mask)
-            except Exception as e:
-                print(f"Watchdog: lazy restart failed: {e}", file=sys.stderr)
-                mask = np.zeros(self.action_mapper.action_space_size, dtype=np.int8)
-                self.current_action_mask = mask
-                self._mask_state_id = id(self.current_state)
-                info = self._make_info(mask, error=str(e))
-                info["crashed"] = True
-                return (
-                    np.zeros(self.state_encoder.shape, dtype=np.float32),
-                    0.0,
-                    True,
-                    False,
-                    info,
-                )
         try:
             action_str = self.action_mapper.get_action_string(action, self.current_state)
             self.process_manager.send_command(action_str)
