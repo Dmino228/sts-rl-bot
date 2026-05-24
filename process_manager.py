@@ -231,11 +231,11 @@ if __name__ == "__main__":
             java_bin,
             "-Xmx256m", "-Xms128m",         # Heap
             "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
-            "-Xss256k",                     # Thread Stacks
+            "-Xss1m",                       # Thread Stacks
             "-XX:ReservedCodeCacheSize=16m",# Code Cache
             "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
             "-XX:+UseSerialGC",             # Garbage Collector
-            "-Xint",
+            "-Xint",                        # Interpreter mode to avoid JIT RAM usage
             f"-Djava.io.tmpdir={worker_tmp_dir}",
             "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
             "nogui",

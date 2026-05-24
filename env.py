@@ -31,6 +31,7 @@ ACT_COMPLETION_REWARD = 15.0
 
 COMBAT_STEP_GRACE = 80
 ANTI_STALL_PENALTY = -0.02
+MAX_COMBAT_STEPS = 250
 
 
 # Valid CommunicationMod character identifiers
@@ -86,6 +87,9 @@ class SlayTheSpireEnv(gym.Env):
         self.current_state: Dict[str, Any] = {}
         self.current_action_mask: Optional[np.ndarray] = None
         self._mask_state_id: Optional[int] = None
+        
+        # Local tracking to prevent unselecting cards in loops
+        self.current_selections: set[int] = set()
 
         # Reward tracking - V3.2
         self.last_player_hp: Optional[int] = None
@@ -201,6 +205,9 @@ class SlayTheSpireEnv(gym.Env):
                     raise
 
         self._reset_reward_tracking(bootstrap_current=False)
+        self.current_selections.clear()
+        if self.current_state:
+            self.current_state["_env_selections"] = self.current_selections.copy()
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self._refresh_action_mask()
@@ -221,7 +228,33 @@ class SlayTheSpireEnv(gym.Env):
         try:
             action_str = self.action_mapper.get_action_string(action, self.current_state)
             self.process_manager.send_command(action_str)
+            
+            old_screen_type = "NONE"
+            if self.current_state and "game_state" in self.current_state:
+                old_screen_type = self.current_state["game_state"].get("screen_type", "NONE")
+                
             self.current_state = self.process_manager.read_state()
+            
+            new_screen_type = "NONE"
+            if self.current_state and "game_state" in self.current_state:
+                new_screen_type = self.current_state["game_state"].get("screen_type", "NONE")
+                
+            if new_screen_type != old_screen_type:
+                self.current_selections.clear()
+            elif new_screen_type in ["GRID", "HAND_SELECT"]:
+                if action_str.startswith("CHOOSE "):
+                    try:
+                        self.current_selections.add(int(action_str.split()[1]))
+                    except Exception:
+                        pass
+                elif action_str in ["CONFIRM", "RETURN", "CANCEL"]:
+                    self.current_selections.clear()
+            else:
+                self.current_selections.clear()
+                
+            if self.current_state:
+                self.current_state["_env_selections"] = self.current_selections.copy()
+
         except (ConnectionResetError, EOFError, TimeoutError, Exception) as e:
             print(f"Watchdog: Java process/socket crashed during step: {e}", file=sys.stderr)
             # Only clean up — do NOT restart here. ThreadedVecEnv auto-calls
@@ -265,6 +298,10 @@ class SlayTheSpireEnv(gym.Env):
 
         obs = self.state_encoder.encode(self.current_state)
         reward = self._calculate_reward()
+        
+        if self.combat_step_count > MAX_COMBAT_STEPS:
+            terminated = True
+            
         truncated = False
         mask = self._refresh_action_mask()
         info = self._make_info(mask)
@@ -474,11 +511,15 @@ class SlayTheSpireEnv(gym.Env):
             hp_delta = current_hp - self.last_player_hp
             reward += self._bounded_hp_reward(hp_delta)
 
+        stall_failure = False
         if in_combat:
             # Anti-stall: action-step fallback until a reliable turn counter exists.
             self.combat_step_count += 1
             if self.combat_step_count > COMBAT_STEP_GRACE:
                 reward += ANTI_STALL_PENALTY
+                
+            if self.combat_step_count > MAX_COMBAT_STEPS:
+                stall_failure = True
 
         # ══════════════════════════════════════════
         # B. MACRO-ECONOMY
@@ -515,7 +556,7 @@ class SlayTheSpireEnv(gym.Env):
         # C1. Death — include terminal no-longer-in-game states.
         dead_screen = screen_type in ["GAME_OVER", "DEATH"]
         dead_by_hp = hp_is_known and current_hp <= 0
-        terminal_failure = dead_by_hp or dead_screen
+        terminal_failure = dead_by_hp or dead_screen or stall_failure
         if terminal_failure and not self.terminal_reward_given:
             reward += DEATH_PENALTY
             self.terminal_reward_given = True
