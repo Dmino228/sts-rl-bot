@@ -224,6 +224,9 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("[LAUNCH] Could not write display config: %s", e)
 
+        worker_tmp_dir = os.path.join(game_dir_abs, "tmp")
+        os.makedirs(worker_tmp_dir, exist_ok=True)
+
         java_cmd = [
             java_bin,
             "-Xmx256m", "-Xms128m",         # Heap
@@ -233,6 +236,7 @@ if __name__ == "__main__":
             "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
             "-XX:+UseSerialGC",             # Garbage Collector
             "-Xint",
+            f"-Djava.io.tmpdir={worker_tmp_dir}",
             "-jar", os.path.join(game_dir, "ModTheSpire.jar"),
             "nogui",
             "--skip-launcher",
@@ -277,6 +281,10 @@ if __name__ == "__main__":
         try:
             self._socket, addr = self._server_socket.accept()
             logger.info("[LAUNCH] Connected to agent_shim on %s", addr)
+            # Set socket-level timeout so readline()/write() can never block
+            # forever when Java hangs (e.g. StackOverflowError kills a thread
+            # but the JVM stays alive, leaving the socket open but silent).
+            self._socket.settimeout(self.timeout)
             # Wrap socket as text streams for readline and write
             self._stdin_stream = self._socket.makefile("r", encoding="utf-8")
             self._stdout_stream = self._socket.makefile("w", encoding="utf-8")
@@ -300,12 +308,30 @@ if __name__ == "__main__":
 
         Blocks until a valid JSON dict is received or timeout is reached.
         CommunicationMod sends one JSON object per line.
+
+        The socket has a timeout set (self.timeout seconds) so readline()
+        will raise socket.timeout if the Java process hangs without closing
+        the connection (e.g. StackOverflowError kills a thread but the JVM
+        stays alive).
         """
         start_time = time.time()
 
         while time.time() - start_time < self.timeout:
             try:
                 line = self._stdin_stream.readline()
+            except socket.timeout:
+                logger.error(
+                    "[WATCHDOG] Socket read timed out after %ss — "
+                    "Java process is likely hung.",
+                    self.timeout,
+                )
+                raise TimeoutError(
+                    f"Socket read timed out after {self.timeout}s. "
+                    f"Java process is alive but unresponsive."
+                )
+            except OSError as e:
+                logger.error("Socket/IO error during read: %s", e)
+                raise
             except Exception as e:
                 logger.error("Error reading stdin: %s", e)
                 raise
@@ -354,25 +380,47 @@ if __name__ == "__main__":
             PROCEED
             STATE
         """
-        self._stdout_stream.write(command + "\n")
-        self._stdout_stream.flush()
+        try:
+            self._stdout_stream.write(command + "\n")
+            self._stdout_stream.flush()
+        except socket.timeout:
+            logger.error(
+                "[WATCHDOG] Socket write timed out sending '%s' — "
+                "Java process is likely hung.",
+                command,
+            )
+            raise TimeoutError(
+                f"Socket write timed out sending '{command}'. "
+                f"Java process is alive but unresponsive."
+            )
+        except OSError as e:
+            logger.error("Socket/IO error during send '%s': %s", command, e)
+            raise
         logger.debug("[SEND] %s", command)
+
+    def is_process_alive(self) -> bool:
+        """Check whether the managed Java subprocess is still running."""
+        if self._proc is None:
+            return False
+        return self._proc.poll() is None
 
     def stop(self) -> None:
         """Terminate the subprocess if we launched it."""
         # 1. Close communication sockets
         if hasattr(self, "_stdin_stream") and self._stdin_stream is not None:
-            try:
-                self._stdin_stream.close()
-            except Exception:
-                pass
+            if self._stdin_stream not in (sys.stdin, getattr(sys, "__stdin__", None)):
+                try:
+                    self._stdin_stream.close()
+                except Exception:
+                    pass
             self._stdin_stream = sys.stdin
 
         if hasattr(self, "_stdout_stream") and self._stdout_stream is not None:
-            try:
-                self._stdout_stream.close()
-            except Exception:
-                pass
+            if self._stdout_stream not in (sys.stdout, getattr(sys, "__stdout__", None)):
+                try:
+                    self._stdout_stream.close()
+                except Exception:
+                    pass
             self._stdout_stream = sys.__stdout__
 
         if hasattr(self, "_socket") and self._socket is not None:

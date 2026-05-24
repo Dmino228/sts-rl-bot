@@ -60,7 +60,7 @@ def parse_args():
         help="Directory where worker directories are stored.",
     )
     parser.add_argument(
-        "--save-freq", type=int, default=10_000,
+        "--save-freq", type=int, default=2048,
         help="Checkpoint save frequency (steps per worker).",
     )
     parser.add_argument(

@@ -54,7 +54,9 @@ class ThreadedVecEnv(VecEnv):
         if not self.waiting or self._pending_futures is None:
             raise RuntimeError("step_wait() called before step_async().")
 
-        results = [future.result() for future in self._pending_futures]
+        # Use timeout so KeyboardInterrupt can be delivered on Windows.
+        # Without timeout, Condition.wait() is not interruptible by signals.
+        results = [future.result(timeout=300) for future in self._pending_futures]
         self._pending_futures = None
         self.waiting = False
 
@@ -74,7 +76,7 @@ class ThreadedVecEnv(VecEnv):
             ))
             for idx, env in enumerate(self.envs)
         ]
-        results = [future.result() for future in futures]
+        results = [future.result(timeout=300) for future in futures]
         obs, reset_infos = zip(*results, strict=True)
         self.reset_infos = reset_infos
         self._reset_seeds()
@@ -84,12 +86,19 @@ class ThreadedVecEnv(VecEnv):
     def close(self) -> None:
         if self.closed:
             return
-        if self.waiting and self._pending_futures is not None:
-            for future in self._pending_futures:
-                future.result()
-            self.waiting = False
+        # Kill all env subprocesses first — this unblocks any worker
+        # thread stuck in launch_game()'s server_socket.accept().
         for env in self.envs:
             env.close()
+        # Now drain any pending futures (they should finish quickly
+        # since we just killed all Java processes and closed sockets).
+        if self.waiting and self._pending_futures is not None:
+            for future in self._pending_futures:
+                try:
+                    future.result(timeout=10)
+                except Exception:
+                    pass
+            self.waiting = False
         self.executor.shutdown(wait=True)
         self.closed = True
 
@@ -142,7 +151,14 @@ class ThreadedVecEnv(VecEnv):
         info["TimeLimit.truncated"] = truncated and not terminated
         if done:
             info["terminal_observation"] = observation
-            observation, reset_info = env.reset()
+            if info.get("crashed"):
+                # Don't auto-reset after a crash. The expensive Java
+                # restart (~30s) would block this worker thread and
+                # prevent Ctrl+C from reaching the main thread.
+                # The env will be lazily restarted on the next step().
+                pass  # observation stays as zeros from step()
+            else:
+                observation, reset_info = env.reset()
         return observation, reward, done, info, reset_info
 
     @staticmethod

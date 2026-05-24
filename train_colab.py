@@ -90,7 +90,7 @@ def parse_args():
         help="PPO rollout buffer size per worker.",
     )
     parser.add_argument(
-        "--save-freq", type=int, default=10_000,
+        "--save-freq", type=int, default=2048,
         help="Checkpoint save frequency (steps per worker).",
     )
     return parser.parse_args()
