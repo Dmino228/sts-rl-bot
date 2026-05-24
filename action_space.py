@@ -187,11 +187,16 @@ class ActionMasker:
                 # instead of screen_state.cards, enabling wrong indices)
                 for i in range(30):
                     mask[68 + i] = 0
-                # Then enable only CHOOSE for actual cards in the grid
+                # Then enable only CHOOSE for actual cards in the grid,
+                # UNLESS they have already been selected (to prevent unselecting loop).
                 for i in range(min(num_choices, 30)):
-                    mask[68 + i] = 1
-                # Block CONFIRM until a card is selected
-                mask[66] = 0
+                    if i not in env_selections:
+                        mask[68 + i] = 1
+                # Block CONFIRM unless 'confirm' is explicitly available (e.g., 'any_number' grids)
+                if "confirm" in available_cmds:
+                    mask[66] = 1
+                else:
+                    mask[66] = 0
 
         # Strict COMBAT_REWARD Logic (Potion Loop Bug Fix)
         # Prevent picking up potions when inventory is full
