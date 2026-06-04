@@ -38,11 +38,15 @@ class GameProcessManager:
         self,
         timeout: float = 120.0,
         worker_dir: Optional[str] = None,
+        worker_id: Optional[int] = None,
+        base_port: int = 12340,
         use_xvfb: bool = False,
         ram_usage: str = "default",
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
+        self.worker_id = worker_id
+        self.base_port = base_port
         self.use_xvfb = use_xvfb
         self.ram_usage = ram_usage.lower()
         if self.ram_usage not in {"low", "default", "safe"}:
@@ -96,19 +100,12 @@ class GameProcessManager:
 
         game_dir_abs = os.path.abspath(game_dir)
 
-        # Extract worker_id from worker_dir (default to 0 if not found)
-        worker_id = 0
-        dirname = os.path.basename(os.path.normpath(game_dir_abs))
-        if "_" in dirname:
-            try:
-                worker_id = int(dirname.split("_")[-1])
-            except ValueError:
-                pass
+        worker_id = self._resolve_worker_id(game_dir_abs)
 
         # Create TCP socket server
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        port = 12340 + worker_id
+        port = self.base_port + worker_id
         self._server_socket.bind(("127.0.0.1", port))
         self._server_socket.listen(1)
         logger.info("[LAUNCH] Worker %d socket server listening on 127.0.0.1:%d", worker_id, port)
@@ -312,6 +309,19 @@ if __name__ == "__main__":
             logger.error("[LAUNCH] Timed out waiting for agent_shim.py to connect on port %d", port)
             self.stop()
             raise TimeoutError(f"Timed out waiting for agent_shim.py to connect on port {port}")
+
+    def _resolve_worker_id(self, game_dir_abs: str) -> int:
+        """Resolve the socket worker id without tying callers to a directory name."""
+        if self.worker_id is not None:
+            return self.worker_id
+
+        dirname = os.path.basename(os.path.normpath(game_dir_abs))
+        if "_" in dirname:
+            try:
+                return int(dirname.split("_")[-1])
+            except ValueError:
+                pass
+        return 0
 
     # ──────────────────────────────────────────────────────────────
     # PROTOCOL

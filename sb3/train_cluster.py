@@ -17,10 +17,14 @@ import datetime
 import traceback
 import multiprocessing
 import time
-from typing import List, Callable
+from typing import Callable
 
 # Setup centralized logging
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+BASE_DIR = PROJECT_ROOT
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
@@ -174,8 +178,8 @@ def main():
     from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.logger import configure
-    from mask_cache_vec_env import CachedActionMaskVecEnv
-    from threaded_vec_env import ThreadedVecEnv
+    from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
+    from sb3.threaded_vec_env import ThreadedVecEnv
     logger.info("Imports completed.")
 
     if args.torch_threads > 0:

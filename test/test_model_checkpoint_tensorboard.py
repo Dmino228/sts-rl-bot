@@ -200,7 +200,7 @@ class TestCachedActionMaskVecEnvInfoPassthrough:
         from stable_baselines3.common.monitor import Monitor
         from stable_baselines3.common.vec_env import DummyVecEnv
         from sb3_contrib.common.wrappers import ActionMasker
-        from mask_cache_vec_env import CachedActionMaskVecEnv
+        from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
 
         def make_fn():
             base_env = StubSlayTheSpireEnv(episode_length=ep_len, reward_per_step=1.0)
@@ -240,7 +240,7 @@ class TestCachedActionMaskVecEnvInfoPassthrough:
         from stable_baselines3.common.monitor import Monitor
         from stable_baselines3.common.vec_env import DummyVecEnv
         from sb3_contrib.common.wrappers import ActionMasker
-        from mask_cache_vec_env import CachedActionMaskVecEnv
+        from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
 
         def make_fn():
             base_env = StubSlayTheSpireEnv(episode_length=ep_len, reward_per_step=reward_per_step)
@@ -525,8 +525,8 @@ class TestThreadedVecEnvInfoPassthrough:
         """info['episode'] must survive ThreadedVecEnv -> CachedActionMaskVecEnv."""
         from stable_baselines3.common.monitor import Monitor
         from sb3_contrib.common.wrappers import ActionMasker
-        from threaded_vec_env import ThreadedVecEnv
-        from mask_cache_vec_env import CachedActionMaskVecEnv
+        from sb3.threaded_vec_env import ThreadedVecEnv
+        from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
 
         ep_len = 3
 
@@ -556,8 +556,8 @@ class TestThreadedVecEnvInfoPassthrough:
         """Each worker in ThreadedVecEnv must independently track episodes."""
         from stable_baselines3.common.monitor import Monitor
         from sb3_contrib.common.wrappers import ActionMasker
-        from threaded_vec_env import ThreadedVecEnv
-        from mask_cache_vec_env import CachedActionMaskVecEnv
+        from sb3.threaded_vec_env import ThreadedVecEnv
+        from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
 
         n_envs = 3
         ep_len = 4

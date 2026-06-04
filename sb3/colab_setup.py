@@ -93,7 +93,7 @@ print(f"Working directory: {os.getcwd()}")
 import sys
 sys.path.insert(0, REPO_DIR)
 
-from cluster_manager import ClusterManager
+from sb3.cluster_manager import ClusterManager
 
 NUM_WORKERS = 2  # Colab free tier: keep ≤2, Pro: try 4
 
@@ -140,7 +140,7 @@ print("✓ Java runs successfully under xvfb-run.")
 # ── CELL 8: Start training ─────────────────────────────────────
 # %%
 # Option A: Run via train_colab.py CLI (recommended for long runs)
-!python {REPO_DIR}/train_colab.py \
+!python {REPO_DIR}/sb3/train_colab.py \
     --base-env-dir {BASE_ENV_DIR} \
     --workspace-dir {WORKSPACE_DIR} \
     --num-workers {NUM_WORKERS} \
@@ -149,7 +149,7 @@ print("✓ Java runs successfully under xvfb-run.")
     --save-freq 10000
 
 # Option B: Multi-character generalization
-# !python {REPO_DIR}/train_colab.py \
+# !python {REPO_DIR}/sb3/train_colab.py \
 #     --base-env-dir {BASE_ENV_DIR} \
 #     --workspace-dir {WORKSPACE_DIR} \
 #     --num-workers 4 \

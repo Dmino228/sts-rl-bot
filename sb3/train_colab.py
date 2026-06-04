@@ -20,7 +20,11 @@ import argparse
 # ──────────────────────────────────────────────────────────────
 # PATH SETUP
 # ──────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+BASE_DIR = PROJECT_ROOT
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
@@ -111,7 +115,7 @@ def main():
     from stable_baselines3.common.callbacks import CheckpointCallback
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.logger import configure
-    from cluster_manager import ClusterManager
+    from sb3.cluster_manager import ClusterManager
     train_logger.info("Imports complete.")
 
     # ── 2. Build character schedule ──

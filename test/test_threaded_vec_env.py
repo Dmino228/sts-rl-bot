@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from threaded_vec_env import ThreadedVecEnv
+from sb3.threaded_vec_env import ThreadedVecEnv
 
 class MockEnv(gym.Env):
     def __init__(self):

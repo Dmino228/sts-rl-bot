@@ -52,6 +52,8 @@ class SlayTheSpireEnv(gym.Env):
         self,
         character_class: str = "IRONCLAD",
         worker_dir: Optional[str] = None,
+        worker_id: Optional[int] = None,
+        base_port: int = 12340,
         use_xvfb: bool = False,
         include_raw_state_in_info: bool = True,
         include_action_mask_in_info: bool = True,
@@ -68,6 +70,8 @@ class SlayTheSpireEnv(gym.Env):
             )
 
         self.worker_dir = worker_dir
+        self.worker_id = worker_id
+        self.base_port = base_port
         self.use_xvfb = use_xvfb
         self.include_raw_state_in_info = include_raw_state_in_info
         self.include_action_mask_in_info = include_action_mask_in_info
@@ -76,6 +80,8 @@ class SlayTheSpireEnv(gym.Env):
         self.process_manager = GameProcessManager(
             timeout=120.0,
             worker_dir=worker_dir,
+            worker_id=worker_id,
+            base_port=base_port,
             use_xvfb=use_xvfb,
             ram_usage=self.ram_usage,
         )
