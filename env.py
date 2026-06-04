@@ -55,7 +55,7 @@ class SlayTheSpireEnv(gym.Env):
         use_xvfb: bool = False,
         include_raw_state_in_info: bool = True,
         include_action_mask_in_info: bool = True,
-        safe_mode: bool = False,
+        ram_usage: str = "default",
     ) -> None:
         super().__init__()
 
@@ -71,12 +71,13 @@ class SlayTheSpireEnv(gym.Env):
         self.use_xvfb = use_xvfb
         self.include_raw_state_in_info = include_raw_state_in_info
         self.include_action_mask_in_info = include_action_mask_in_info
+        self.ram_usage = ram_usage.lower()
 
         self.process_manager = GameProcessManager(
             timeout=120.0,
             worker_dir=worker_dir,
             use_xvfb=use_xvfb,
-            safe_mode=safe_mode,
+            ram_usage=self.ram_usage,
         )
 
         self.action_mapper = ActionMapper()

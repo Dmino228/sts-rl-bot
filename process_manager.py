@@ -39,12 +39,17 @@ class GameProcessManager:
         timeout: float = 120.0,
         worker_dir: Optional[str] = None,
         use_xvfb: bool = False,
-        safe_mode: bool = False,
+        ram_usage: str = "default",
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
         self.use_xvfb = use_xvfb
-        self.safe_mode = safe_mode
+        self.ram_usage = ram_usage.lower()
+        if self.ram_usage not in {"low", "default", "safe"}:
+            raise ValueError(
+                f"Invalid ram_usage '{ram_usage}'. "
+                "Must be one of 'low', 'default', 'safe'"
+            )
         self._last_state: Optional[Dict[str, Any]] = None
 
         # Subprocess handle, logs, and sockets (only set when Python launches the game)
@@ -231,7 +236,7 @@ if __name__ == "__main__":
 
         java_cmd = [java_bin]
 
-        if not self.safe_mode:
+        if self.ram_usage == "low":
             java_cmd.extend([
                 "-Xmx256m", "-Xms128m",         # Heap
                 "-XX:MaxDirectMemorySize=128m", # Native Memory (Textures/Audio)
@@ -240,6 +245,14 @@ if __name__ == "__main__":
                 "-XX:MaxMetaspaceSize=64m",     # Metadata (classes)
                 "-XX:+UseSerialGC",             # Garbage Collector
                 "-Xint",                        # Interpreter mode to avoid JIT RAM usage
+            ])
+        elif self.ram_usage == "default":
+            java_cmd.extend([
+                "-Xmx256m", "-Xms128m",         # Heap
+            ])
+        elif self.ram_usage == "safe":
+            java_cmd.extend([
+                "-Xmx512m", "-Xms256m",         # Heap
             ])
 
         java_cmd.extend([
