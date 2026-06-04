@@ -107,6 +107,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_act: int = 1
         self.last_in_combat: bool = False
         self.terminal_reward_given: bool = False
+        self.combat_victory_reward_given: bool = False
         self.episode_ended_by_act_completion: bool = False
 
     def reset(
@@ -373,6 +374,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_act = 1
         self.last_in_combat = False
         self.terminal_reward_given = False
+        self.combat_victory_reward_given = False
         self.episode_ended_by_act_completion = False
 
         if not bootstrap_current or not self.current_state:
@@ -515,6 +517,7 @@ class SlayTheSpireEnv(gym.Env):
 
         stall_failure = False
         if in_combat:
+            self.combat_victory_reward_given = False
             # Anti-stall: action-step fallback until a reliable turn counter exists.
             self.combat_step_count += 1
             if self.combat_step_count > COMBAT_STEP_GRACE:
@@ -531,10 +534,12 @@ class SlayTheSpireEnv(gym.Env):
             # B1. Floor progress — primary signal
             if current_floor > self.last_floor:
                 reward += FLOOR_REWARD * (current_floor - self.last_floor)
+                self.combat_victory_reward_given = False
 
-            # B2. Combat victory (screen transition guard)
-            if screen_type == "COMBAT_REWARD" and self.last_screen_type != "COMBAT_REWARD":
+            # B2. Combat victory (screen transition guard & one-shot victory guard)
+            if screen_type == "COMBAT_REWARD" and not self.combat_victory_reward_given:
                 reward += COMBAT_VICTORY_REWARD
+                self.combat_victory_reward_given = True
                 self.combat_step_count = 0
 
             # B3. Relics acquired, tracked by ID so swaps are not missed
