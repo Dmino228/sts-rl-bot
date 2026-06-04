@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-freq", type=int, default=1, help="Save every N RLlib train iterations.")
     parser.add_argument("--resume-from", default="", help="Path to an RLlib checkpoint directory.")
     parser.add_argument("--init-from-sb3", default="", help="Optional SB3 .zip checkpoint for warm-start weights.")
-    parser.add_argument("--local-mode", action="store_true", help="Run Ray local_mode for debugging.")
+
     parser.add_argument("--smoke-test", action="store_true", help="Use a tiny masked env instead of launching STS.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
@@ -82,7 +82,7 @@ def main() -> None:
     logger.info("Log file: %s", log_file)
     logger.info("Workers=%d envs_per_worker=%d timesteps=%d", args.workers, args.envs_per_worker, args.timesteps)
 
-    ray.init(ignore_reinit_error=True, local_mode=args.local_mode, log_to_driver=True)
+    ray.init(ignore_reinit_error=True, log_to_driver=True)
     register_action_mask_model()
 
     if args.smoke_test:
