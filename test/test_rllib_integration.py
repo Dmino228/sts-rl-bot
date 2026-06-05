@@ -106,6 +106,95 @@ def test_train_rllib_module_imports_without_ray_model_dependency():
     module = importlib.import_module("rllib.train_rllib")
     assert hasattr(module, "parse_args")
 
+def test_rllib_wrapper_clips_out_of_bounds_observations():
+    """RLLibActionMaskEnv must clip observations that exceed the declared space."""
+    base_env = StubMaskedEnv()
+    env = RLLibActionMaskEnv(base_env)
+
+    # Inject an out-of-bounds observation into the base env
+    original_step = base_env.step
+
+    def step_with_oob(action):
+        obs, reward, terminated, truncated, info = original_step(action)
+        # Simulate state_encoder producing values > 1.0 (e.g. pile sizes)
+        obs[13] = 1.5   # draw_pile / 40 with 60 cards
+        obs[17] = -1.3  # negative strength
+        obs[107] = 2.0  # monster power
+        return obs, reward, terminated, truncated, info
+
+    base_env.step = step_with_oob
+    env.reset()
+    obs, _, _, _, _ = env.step(66)  # valid action
+
+    assert obs["observations"][13] == 1.0, "Values > 1.0 must be clipped to 1.0"
+    assert obs["observations"][17] == -1.0, "Values < -1.0 must be clipped to -1.0"
+    assert obs["observations"][107] == 1.0, "All out-of-bounds values must be clipped"
+    assert env.observation_space.contains(obs), "Clipped obs must be within declared space"
+
+
+def test_state_encoder_always_within_bounds():
+    """StateEncoder.encode() must always return values within [-1, 1]."""
+    from state_encoder import StateEncoder
+
+    encoder = StateEncoder()
+
+    # Simulate an extreme combat state with large values
+    extreme_state = {
+        "game_state": {
+            "screen_type": "COMBAT",
+            "floor": 999,
+            "gold": 99999,
+            "ascension_level": 20,
+            "current_hp": 1,
+            "max_hp": 1,
+            "potions": [{"id": f"potion_{i}"} for i in range(10)],
+            "combat_state": {
+                "player": {
+                    "current_hp": 50,
+                    "max_hp": 80,
+                    "energy": 99,
+                    "block": 999,
+                    "powers": [
+                        {"id": "Strength", "amount": 999},
+                        {"id": "Dexterity", "amount": -50},
+                        {"id": "Vulnerable", "amount": 99},
+                        {"id": "Weak", "amount": 99},
+                        {"id": "Frail", "amount": 99},
+                    ],
+                },
+                "hand": [
+                    {"cost": 10, "damage": 999, "block": 999, "type": "ATTACK"}
+                    for _ in range(10)
+                ],
+                "draw_pile": [{}] * 100,
+                "discard_pile": [{}] * 100,
+                "exhaust_pile": [{}] * 100,
+                "monsters": [
+                    {
+                        "current_hp": 500,
+                        "max_hp": 500,
+                        "block": 999,
+                        "intent": "ATTACK",
+                        "move_adjusted_damage": 999,
+                        "move_hits": 99,
+                        "powers": [
+                            {"id": "Strength", "amount": 999},
+                            {"id": "Vulnerable", "amount": 99},
+                            {"id": "Weak", "amount": 99},
+                            {"id": "Ritual", "amount": 99},
+                        ],
+                    }
+                    for _ in range(5)
+                ],
+            },
+        }
+    }
+
+    obs = encoder.encode(extreme_state)
+    assert np.all(obs >= -1.0), f"Min value {obs.min()} is below -1.0 at index {obs.argmin()}"
+    assert np.all(obs <= 1.0), f"Max value {obs.max()} exceeds 1.0 at index {obs.argmax()}"
+    assert encoder.observation_space.contains(obs), "Encoded obs must be within declared space"
+
 
 def test_rllib_smoke_training_one_optimization_step(tmp_path, monkeypatch):
     ray = pytest.importorskip("ray")

@@ -82,13 +82,29 @@ class RLLibActionMaskEnv(gym.Wrapper):
         """Compatibility hook for tooling that still asks the env directly."""
         return self._current_base_mask().astype(np.float32, copy=True)
 
+    def close(self) -> None:
+        """Ensure the underlying env (and its Java process) is stopped."""
+        try:
+            self.env.close()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        """Fallback cleanup when the wrapper is garbage-collected after a crash."""
+        try:
+            self.env.close()
+        except Exception:
+            pass
+
     def _wrap_observation(
         self,
         observation: Any,
         mask: np.ndarray,
     ) -> dict[str, np.ndarray]:
+        obs = np.asarray(observation, dtype=np.float32)
+        obs = np.clip(obs, self.env.observation_space.low, self.env.observation_space.high)
         return {
-            "observations": np.asarray(observation, dtype=np.float32),
+            "observations": obs,
             "action_mask": mask.astype(np.float32, copy=False),
         }
 
