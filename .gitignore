@@ -15,3 +15,4 @@ cluster_workers
 .pytest_cache
 .vscode
 repomix-output.xml
+rllib_workers
