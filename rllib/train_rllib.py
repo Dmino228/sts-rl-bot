@@ -50,6 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-freq", type=int, default=1, help="Save every N RLlib train iterations.")
     parser.add_argument("--resume-from", default="", help="Path to an RLlib checkpoint directory.")
     parser.add_argument("--init-from-sb3", default="", help="Optional SB3 .zip checkpoint for warm-start weights.")
+    parser.add_argument("--sample-timeout-s", type=float, default=600.0,
+                        help="Seconds Ray waits for workers to produce a rollout fragment. "
+                             "STS is a slow Java env — set this high (default: 600).")
 
     parser.add_argument("--smoke-test", action="store_true", help="Use a tiny masked env instead of launching STS.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -178,6 +181,7 @@ def _configure_rollout_workers(config: Any, args: argparse.Namespace) -> Any:
                 num_rollout_workers=args.workers,
                 num_envs_per_worker=args.envs_per_worker,
                 rollout_fragment_length=args.rollout_fragment_length,
+                sample_timeout_s=args.sample_timeout_s,
             )
         except (TypeError, ValueError):
             pass
@@ -186,6 +190,7 @@ def _configure_rollout_workers(config: Any, args: argparse.Namespace) -> Any:
             num_env_runners=args.workers,
             num_envs_per_env_runner=args.envs_per_worker,
             rollout_fragment_length=args.rollout_fragment_length,
+            sample_timeout_s=args.sample_timeout_s,
         )
     return config
 
