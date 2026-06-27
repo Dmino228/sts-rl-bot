@@ -43,23 +43,23 @@ class StateEncoder:
         obs[12] = math.tanh(player.get("block", 0) / 50.0)
         
         # NEW: Deck sizes
-        obs[13] = len(combat_state.get("draw_pile", [])) / 40.0
-        obs[14] = len(combat_state.get("discard_pile", [])) / 40.0
-        obs[15] = len(combat_state.get("exhaust_pile", [])) / 40.0
+        obs[13] = min(len(combat_state.get("draw_pile", [])) / 40.0, 1.0)
+        obs[14] = min(len(combat_state.get("discard_pile", [])) / 40.0, 1.0)
+        obs[15] = min(len(combat_state.get("exhaust_pile", [])) / 40.0, 1.0)
         
         potions = game_state.get("potions", [])
         valid_potions = [p for p in potions if p.get("id", "Potion Slot") != "Potion Slot"]
-        obs[16] = len(valid_potions) / 5.0
+        obs[16] = min(len(valid_potions) / 5.0, 1.0)
         
         # 2. Player Powers/Status Effects (17-21)
         player_powers = player.get("powers", [])
         powers_dict = {p.get("id"): p.get("amount", 0) for p in player_powers}
         
-        obs[17] = powers_dict.get("Strength", 0) / 10.0
-        obs[18] = powers_dict.get("Dexterity", 0) / 10.0
-        obs[19] = powers_dict.get("Vulnerable", 0) / 5.0
-        obs[20] = powers_dict.get("Weak", 0) / 5.0
-        obs[21] = powers_dict.get("Frail", 0) / 5.0
+        obs[17] = math.tanh(powers_dict.get("Strength", 0) / 10.0)
+        obs[18] = math.tanh(powers_dict.get("Dexterity", 0) / 10.0)
+        obs[19] = min(powers_dict.get("Vulnerable", 0) / 5.0, 1.0)
+        obs[20] = min(powers_dict.get("Weak", 0) / 5.0, 1.0)
+        obs[21] = min(powers_dict.get("Frail", 0) / 5.0, 1.0)
         
         # 3. Hand Cards - Max 10 (22-101)
         hand = combat_state.get("hand", [])
@@ -114,10 +114,10 @@ class StateEncoder:
             m_powers = m.get("powers", [])
             m_powers_dict = {p.get("id"): p.get("amount", 0) for p in m_powers}
             
-            obs[base_idx + 6] = m_powers_dict.get("Strength", 0) / 10.0
-            obs[base_idx + 7] = m_powers_dict.get("Vulnerable", 0) / 10.0
-            obs[base_idx + 8] = m_powers_dict.get("Weak", 0) / 10.0
-            obs[base_idx + 9] = m_powers_dict.get("Ritual", 0) / 10.0
+            obs[base_idx + 6] = math.tanh(m_powers_dict.get("Strength", 0) / 10.0)
+            obs[base_idx + 7] = min(m_powers_dict.get("Vulnerable", 0) / 10.0, 1.0)
+            obs[base_idx + 8] = min(m_powers_dict.get("Weak", 0) / 10.0, 1.0)
+            obs[base_idx + 9] = min(m_powers_dict.get("Ritual", 0) / 10.0, 1.0)
             
         # 5. Watcher Stances - 3 bits (152-154)
         stance_str = str(player.get("stance", "")).upper()
@@ -146,4 +146,6 @@ class StateEncoder:
             obs[base_idx + 3] = 1.0 if orb_id == "PLASMA" else 0.0
             obs[base_idx + 4] = 1.0 if orb_id == "EMPTY" else 0.0
 
+        # Safety net: ensure no value escapes the declared [-1, 1] space
+        np.clip(obs, -1.0, 1.0, out=obs)
         return obs

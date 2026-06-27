@@ -17,20 +17,16 @@ import datetime
 import traceback
 import multiprocessing
 import time
-from typing import List, Callable
+from typing import Callable
 
 # Setup centralized logging
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+BASE_DIR = PROJECT_ROOT
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
-
-# Cleanup old log files
-for pattern in ["training_*.log", "cluster_training_*.log"]:
-    for f in glob.glob(os.path.join(LOGS_DIR, pattern)):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
 
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 log_file = os.path.join(LOGS_DIR, f"cluster_training_{TIMESTAMP}.log")
@@ -68,7 +64,7 @@ def parse_args():
         help="Directory where worker directories are stored.",
     )
     parser.add_argument(
-        "--save-freq", type=int, default=10_000,
+        "--save-freq", type=int, default=2048,
         help="Checkpoint save frequency (steps per worker).",
     )
     parser.add_argument(
@@ -78,6 +74,10 @@ def parse_args():
     parser.add_argument(
         "--use-xvfb", action="store_true",
         help="Wrap Java launch in xvfb-run (required on headless Linux).",
+    )
+    parser.add_argument(
+        "--ram-usage", choices=["low", "default", "safe"], default="default",
+        help="Java/JVM RAM usage configuration profile (default: default).",
     )
     parser.add_argument(
         "--force-rebuild", action="store_true",
@@ -133,6 +133,7 @@ def make_env(
     worker_dir: str,
     use_xvfb: bool,
     debug_env_info: bool,
+    ram_usage: str,
 ) -> Callable:
     """Closure factory to create a single wrapped environment."""
     def _init():
@@ -147,6 +148,7 @@ def make_env(
             use_xvfb=use_xvfb,
             include_raw_state_in_info=debug_env_info,
             include_action_mask_in_info=True,
+            ram_usage=ram_usage,
         )
         # Monitor must wrap BEFORE ActionMasker so that info["episode"]
         # (populated on done=True) propagates through VecEnv to SB3's logger.
@@ -176,8 +178,8 @@ def main():
     from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.logger import configure
-    from mask_cache_vec_env import CachedActionMaskVecEnv
-    from threaded_vec_env import ThreadedVecEnv
+    from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
+    from sb3.threaded_vec_env import ThreadedVecEnv
     logger.info("Imports completed.")
 
     if args.torch_threads > 0:
@@ -279,6 +281,7 @@ def main():
                 worker_dir,
                 args.use_xvfb,
                 args.debug_env_info,
+                args.ram_usage,
             )
         )
 
@@ -311,7 +314,7 @@ def main():
     vec_env = CachedActionMaskVecEnv(vec_env_base)
 
     # 4. Centralized TensorBoard and model checkpoint configuration
-    tensorboard_path = os.path.join(BASE_DIR, "logs", "ppo_sts_cluster")
+    tensorboard_path = os.path.join(BASE_DIR, "logs", f"ppo_run_{TIMESTAMP}")
     models_path = os.path.join(BASE_DIR, "models")
     os.makedirs(models_path, exist_ok=True)
 
@@ -330,15 +333,35 @@ def main():
         ),
     ])
 
-    # Initialize model
-    logger.info("Initializing MaskablePPO model...")
-    model = MaskablePPO(
-        "MlpPolicy",
-        vec_env,
-        verbose=1,
-        n_steps=args.n_steps,
-        tensorboard_log=tensorboard_path,
-    )
+    # Initialize or Load Model
+    final_model_path = os.path.join(models_path, "ppo_sts_cluster_final.zip")
+    checkpoints = glob.glob(os.path.join(models_path, "ppo_sts_cluster_*_steps.zip"))
+
+    if os.path.exists(final_model_path):
+        latest_model = final_model_path
+    elif checkpoints:
+        latest_model = max(checkpoints, key=os.path.getmtime)
+    else:
+        latest_model = None
+
+    if latest_model:
+        logger.info("Loading model from %s ...", latest_model)
+        model = MaskablePPO.load(
+            latest_model,
+            env=vec_env,
+            custom_objects={"n_steps": args.n_steps},
+            tensorboard_log=tensorboard_path
+        )
+        logger.info("Resuming training. Current total timesteps: %d", model.num_timesteps)
+    else:
+        logger.info("Initializing MaskablePPO model...")
+        model = MaskablePPO(
+            "MlpPolicy",
+            vec_env,
+            verbose=1,
+            n_steps=args.n_steps,
+            tensorboard_log=tensorboard_path,
+        )
 
     # Centralize logger output
     custom_logger = configure(tensorboard_path, ["tensorboard", "csv", "stdout"])
@@ -350,6 +373,7 @@ def main():
         model.learn(
             total_timesteps=args.timesteps,
             callback=callbacks,
+            reset_num_timesteps=False,
         )
         logger.info("Training finished successfully!")
     except KeyboardInterrupt:

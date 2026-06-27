@@ -145,7 +145,43 @@ def _event_state_living_wall():
             "max_hp": 88,
             "gold": 119,
             "act": 1,
+        }
+    }
+
+
+def _grid_state_any_number():
+    """
+    Simulated state: GRID screen for 'any_number' selection (e.g., Gambling Chip).
+    'confirm' is available from the start, confirm_up might be false.
+    """
+    return {
+        "available_commands": ["choose", "confirm", "key", "click", "wait", "state"],
+        "ready_for_command": True,
+        "in_game": True,
+        "game_state": {
+            "choice_list": [
+                "strike", "strike", "strike", "strike", "strike"
+            ],
+            "screen_type": "GRID",
+            "screen_state": {
+                "cards": list(_DECK_CARDS[:5]),
+                "selected_cards": [],
+                "for_transform": False,
+                "confirm_up": False,
+                "any_number": True,
+                "for_upgrade": False,
+                "num_cards": 5,
+                "for_purge": True,
+            },
+            "current_hp": 82,
+            "max_hp": 88,
+            "gold": 119,
+            "act": 1,
             "floor": 2,
+            "screen_name": "GRID",
+            "room_phase": "COMBAT",
+            "is_screen_up": True,
+            "action_phase": "WAITING_ON_USER",
         }
     }
 
@@ -208,6 +244,27 @@ class TestGridMasker:
             assert mask[i] == 0, f"POTION {i} should be disabled on GRID"
         # END (65)
         assert mask[65] == 0, "END should be disabled on GRID"
+
+    def test_before_selection_blocks_already_selected_cards(self):
+        """CHOOSE actions for cards already in _env_selections must be disabled."""
+        state = _grid_state_before_selection()
+        state["_env_selections"] = {2, 5}
+        mask = self.masker.get_mask(state)
+
+        # 2 and 5 should be blocked
+        assert mask[68 + 2] == 0, "CHOOSE 2 should be blocked because it's in _env_selections"
+        assert mask[68 + 5] == 0, "CHOOSE 5 should be blocked because it's in _env_selections"
+        
+        # 0, 1, 3, 4, 6, 7, 8, 9, 10 should be enabled
+        for i in [0, 1, 3, 4, 6, 7, 8, 9, 10]:
+            assert mask[68 + i] == 1, f"CHOOSE {i} should be enabled"
+
+    def test_before_selection_any_number_confirm_enabled(self):
+        """For 'any_number' grids (e.g. Scry/Gambling Chip), CONFIRM must be enabled if in available_commands."""
+        state = _grid_state_any_number()
+        mask = self.masker.get_mask(state)
+
+        assert mask[66] == 1, "CONFIRM should be enabled for any_number grid because it is in available_commands"
 
     # ---- After card selection ----
 

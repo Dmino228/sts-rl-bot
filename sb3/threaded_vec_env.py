@@ -54,7 +54,9 @@ class ThreadedVecEnv(VecEnv):
         if not self.waiting or self._pending_futures is None:
             raise RuntimeError("step_wait() called before step_async().")
 
-        results = [future.result() for future in self._pending_futures]
+        # Use timeout so KeyboardInterrupt can be delivered on Windows.
+        # Without timeout, Condition.wait() is not interruptible by signals.
+        results = [future.result(timeout=300) for future in self._pending_futures]
         self._pending_futures = None
         self.waiting = False
 
@@ -74,7 +76,7 @@ class ThreadedVecEnv(VecEnv):
             ))
             for idx, env in enumerate(self.envs)
         ]
-        results = [future.result() for future in futures]
+        results = [future.result(timeout=300) for future in futures]
         obs, reset_infos = zip(*results, strict=True)
         self.reset_infos = reset_infos
         self._reset_seeds()
@@ -84,12 +86,19 @@ class ThreadedVecEnv(VecEnv):
     def close(self) -> None:
         if self.closed:
             return
-        if self.waiting and self._pending_futures is not None:
-            for future in self._pending_futures:
-                future.result()
-            self.waiting = False
+        # Kill all env subprocesses first — this unblocks any worker
+        # thread stuck in launch_game()'s server_socket.accept().
         for env in self.envs:
             env.close()
+        # Now drain any pending futures (they should finish quickly
+        # since we just killed all Java processes and closed sockets).
+        if self.waiting and self._pending_futures is not None:
+            for future in self._pending_futures:
+                try:
+                    future.result(timeout=10)
+                except Exception:
+                    pass
+            self.waiting = False
         self.executor.shutdown(wait=True)
         self.closed = True
 
@@ -136,13 +145,27 @@ class ThreadedVecEnv(VecEnv):
         ]
 
     def _step_env(self, env: gym.Env, action: Any) -> tuple[Any, float, bool, dict[str, Any], dict[str, Any]]:
+        if getattr(env, "needs_lazy_reset", False):
+            # If the env crashed in the previous cycle, we deferred the reset
+            # to give the main thread a window to process Ctrl+C. Now we must
+            # reset it before stepping to satisfy SB3's Monitor wrapper.
+            env.needs_lazy_reset = False
+            env.reset()
+
         observation, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         reset_info: dict[str, Any] = {}
         info["TimeLimit.truncated"] = truncated and not terminated
         if done:
             info["terminal_observation"] = observation
-            observation, reset_info = env.reset()
+            if info.get("crashed"):
+                # Defer the expensive Java restart to the next step cycle.
+                # This prevents worker threads from immediately launching Java
+                # when Ctrl+C kills processes, blocking the main thread from
+                # exiting cleanly.
+                env.needs_lazy_reset = True
+            else:
+                observation, reset_info = env.reset()
         return observation, reward, done, info, reset_info
 
     @staticmethod

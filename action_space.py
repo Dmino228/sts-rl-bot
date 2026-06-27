@@ -138,7 +138,15 @@ class ActionMasker:
         # During training this can create choose->return loops instead of progress.
         if screen_type == "MAP" and "choose" in available_cmds:
             mask[67] = 0
-                
+
+        # Prevent toggling already selected cards (Scry / Discard infinite loop fix)
+        # env.py tracks which CHOOSE indices have been sent in the current screen
+        env_selections = state.get("_env_selections", set())
+        if screen_type in ["GRID", "HAND_SELECT"] and env_selections:
+            for idx in env_selections:
+                if 68 + idx < self.action_space_size:
+                    mask[68 + idx] = 0
+                    
         # Strict GRID Screen Logic Override
         # Logs prove: CommunicationMod DOES provide "choose" on GRID screens.
         # The real bug: after card selection, "cancel" appears in available_commands,
@@ -179,11 +187,16 @@ class ActionMasker:
                 # instead of screen_state.cards, enabling wrong indices)
                 for i in range(30):
                     mask[68 + i] = 0
-                # Then enable only CHOOSE for actual cards in the grid
+                # Then enable only CHOOSE for actual cards in the grid,
+                # UNLESS they have already been selected (to prevent unselecting loop).
                 for i in range(min(num_choices, 30)):
-                    mask[68 + i] = 1
-                # Block CONFIRM until a card is selected
-                mask[66] = 0
+                    if i not in env_selections:
+                        mask[68 + i] = 1
+                # Block CONFIRM unless 'confirm' is explicitly available (e.g., 'any_number' grids)
+                if "confirm" in available_cmds:
+                    mask[66] = 1
+                else:
+                    mask[66] = 0
 
         # Strict COMBAT_REWARD Logic (Potion Loop Bug Fix)
         # Prevent picking up potions when inventory is full

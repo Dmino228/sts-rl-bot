@@ -8,23 +8,18 @@ import traceback
 # ──────────────────────────────────────────────────────────────
 # PATH SETUP
 # ──────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+BASE_DIR = PROJECT_ROOT
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-tensorboard_path = os.path.join(BASE_DIR, "ppo_sts_tensorboard")
-models_path = os.path.join(BASE_DIR, "models")
-
-# Cleanup old log files
-for pattern in ["training_*.log", "cluster_training_*.log"]:
-    for f in glob.glob(os.path.join(LOGS_DIR, pattern)):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-
 TIMESTAMP = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 log_file = os.path.join(LOGS_DIR, f"training_{TIMESTAMP}.log")
+tensorboard_path = os.path.join(LOGS_DIR, f"ppo_run_{TIMESTAMP}")
+models_path = os.path.join(BASE_DIR, "models")
 
 os.makedirs(tensorboard_path, exist_ok=True)
 os.makedirs(models_path, exist_ok=True)
@@ -151,6 +146,7 @@ def main():
             custom_objects={"n_steps": 2048},
             tensorboard_log=tensorboard_path
         )
+        train_logger.info(f"Resuming training. Current total timesteps: {model.num_timesteps}")
     else:
         train_logger.info("Initializing new model ...")
         model = MaskablePPO(

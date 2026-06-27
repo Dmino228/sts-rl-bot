@@ -25,6 +25,7 @@ import time
 from typing import Optional, List, Callable, Dict, Any
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ClusterManager:
@@ -157,9 +158,6 @@ class ClusterManager:
         for bidirectional communication. We point it to a shim script that
         imports and runs our training agent.
         """
-        # Locate the script directory (where env.py, train.py, etc. live)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
         # Create a per-worker launcher shim
         shim_path = os.path.join(worker_dir, "agent_shim.py")
         shim_content = f'''#!/usr/bin/env python3
@@ -168,14 +166,14 @@ import sys
 import os
 
 # Add project root to path
-sys.path.insert(0, {repr(script_dir)})
+sys.path.insert(0, {repr(PROJECT_ROOT)})
 
 # Signal ready immediately
 sys.__stdout__.write("ready\\n")
 sys.__stdout__.flush()
 
 # Import and run the worker entrypoint
-from cluster_worker import worker_main
+from sb3.cluster_worker import worker_main
 
 worker_main(
     worker_id={worker_id},
@@ -230,7 +228,7 @@ worker_main(
         """
         from stable_baselines3.common.vec_env import SubprocVecEnv
         from sb3_contrib.common.wrappers import ActionMasker
-        from mask_cache_vec_env import CachedActionMaskVecEnv
+        from sb3.mask_cache_vec_env import CachedActionMaskVecEnv
 
         if not self._initialized:
             self.initialize_workers(character_schedule=character_schedule)
@@ -278,7 +276,8 @@ worker_main(
             "[CLUSTER] Creating SubprocVecEnv with %d workers...",
             self.num_workers,
         )
-        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method="fork"))
+        start_method = "fork" if sys.platform != "win32" else "spawn"
+        return CachedActionMaskVecEnv(SubprocVecEnv(env_fns, start_method=start_method))
 
     # ──────────────────────────────────────────────────────────────
     # CLEANUP

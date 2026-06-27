@@ -31,6 +31,7 @@ ACT_COMPLETION_REWARD = 15.0
 
 COMBAT_STEP_GRACE = 80
 ANTI_STALL_PENALTY = -0.02
+MAX_COMBAT_STEPS = 250
 
 
 # Valid CommunicationMod character identifiers
@@ -51,9 +52,12 @@ class SlayTheSpireEnv(gym.Env):
         self,
         character_class: str = "IRONCLAD",
         worker_dir: Optional[str] = None,
+        worker_id: Optional[int] = None,
+        base_port: int = 12340,
         use_xvfb: bool = False,
         include_raw_state_in_info: bool = True,
         include_action_mask_in_info: bool = True,
+        ram_usage: str = "default",
     ) -> None:
         super().__init__()
 
@@ -66,14 +70,20 @@ class SlayTheSpireEnv(gym.Env):
             )
 
         self.worker_dir = worker_dir
+        self.worker_id = worker_id
+        self.base_port = base_port
         self.use_xvfb = use_xvfb
         self.include_raw_state_in_info = include_raw_state_in_info
         self.include_action_mask_in_info = include_action_mask_in_info
+        self.ram_usage = ram_usage.lower()
 
         self.process_manager = GameProcessManager(
             timeout=120.0,
             worker_dir=worker_dir,
+            worker_id=worker_id,
+            base_port=base_port,
             use_xvfb=use_xvfb,
+            ram_usage=self.ram_usage,
         )
 
         self.action_mapper = ActionMapper()
@@ -86,6 +96,9 @@ class SlayTheSpireEnv(gym.Env):
         self.current_state: Dict[str, Any] = {}
         self.current_action_mask: Optional[np.ndarray] = None
         self._mask_state_id: Optional[int] = None
+        
+        # Local tracking to prevent unselecting cards in loops
+        self.current_selections: set[int] = set()
 
         # Reward tracking - V3.2
         self.last_player_hp: Optional[int] = None
@@ -101,6 +114,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_act: int = 1
         self.last_in_combat: bool = False
         self.terminal_reward_given: bool = False
+        self.combat_victory_reward_given: bool = False
         self.episode_ended_by_act_completion: bool = False
 
     def reset(
@@ -111,97 +125,99 @@ class SlayTheSpireEnv(gym.Env):
         """Wait for the initial game state from CommunicationMod."""
         super().reset(seed=seed)
 
-        # Launch the game subprocess if running in Python-as-parent mode
-        if self.worker_dir is not None and self.process_manager._proc is None:
-            self.process_manager.launch_game()
-            self.process_manager.signal_ready()
+        max_reset_attempts = 3
+        for attempt in range(max_reset_attempts):
+            try:
+                # Launch the game subprocess if running in Python-as-parent mode
+                if self.worker_dir is not None and self.process_manager._proc is None:
+                    self.process_manager.launch_game()
+                    self.process_manager.signal_ready()
 
-        try:
-            print("Waiting for game state from CommunicationMod...", file=sys.stderr)
+                print(f"Waiting for game state from CommunicationMod (attempt {attempt + 1})...", file=sys.stderr)
 
-            # If we already have state from step() (e.g. death/victory screen),
-            # reuse it instead of blocking on a fresh read_state() — which would
-            # deadlock because CommunicationMod is waiting for OUR command.
-            if not self.current_state:
-                self.current_state = self.process_manager.read_state()
+                # If we already have state from step() (e.g. death/victory screen),
+                # reuse it instead of blocking on a fresh read_state() — which would
+                # deadlock because CommunicationMod is waiting for OUR command.
+                if not self.current_state:
+                    self.current_state = self.process_manager.read_state()
 
-            game_state = self.current_state.get("game_state", {})
-            if self._can_soft_reset_at_act_boundary(game_state):
-                act = game_state.get("act", 1)
-                floor = game_state.get("floor", 0)
-                screen = game_state.get("screen_type", "NONE")
-                print(
-                    f"Soft reset at act boundary: act={act}, "
-                    f"floor={floor}, screen={screen}.",
-                    file=sys.stderr,
-                )
-                self._reset_reward_tracking(bootstrap_current=True)
-                obs = self.state_encoder.encode(self.current_state)
-                mask = self._refresh_action_mask()
-                return obs, self._make_info(mask)
-
-            # Cleanup Loop: navigate through Game Over / Victory / Score screens
-            # back to Main Menu where "start" is available.
-            max_cleanup_steps = 30
-            for cleanup_step in range(max_cleanup_steps):
-                in_game = self.current_state.get("in_game", False)
-                available_cmds = self.current_state.get("available_commands", [])
-
-                # Verbose cleanup logging disabled for performance
-                # print(
-                #     f"[reset cleanup #{cleanup_step}] in_game={in_game}, "
-                #     f"cmds={available_cmds}",
-                #     file=sys.stderr,
-                # )
-
-                if not in_game and "start" in available_cmds:
+                game_state = self.current_state.get("game_state", {})
+                if self._can_soft_reset_at_act_boundary(game_state):
+                    act = game_state.get("act", 1)
+                    floor = game_state.get("floor", 0)
+                    screen = game_state.get("screen_type", "NONE")
                     print(
-                        f"At main menu. Sending START {self.character_class}...",
+                        f"Soft reset at act boundary: act={act}, "
+                        f"floor={floor}, screen={screen}.",
                         file=sys.stderr,
                     )
-                    self.process_manager.send_command(f"START {self.character_class}")
-                    break
-                elif "proceed" in available_cmds:
-                    self.process_manager.send_command("PROCEED")
-                elif "return" in available_cmds:
-                    self.process_manager.send_command("RETURN")
-                elif "confirm" in available_cmds:
-                    self.process_manager.send_command("CONFIRM")
+                    self._reset_reward_tracking(bootstrap_current=True)
+                    obs = self.state_encoder.encode(self.current_state)
+                    mask = self._refresh_action_mask()
+                    return obs, self._make_info(mask)
+
+                # Cleanup Loop: navigate through Game Over / Victory / Score screens
+                # back to Main Menu where "start" is available.
+                max_cleanup_steps = 30
+                for cleanup_step in range(max_cleanup_steps):
+                    in_game = self.current_state.get("in_game", False)
+                    available_cmds = self.current_state.get("available_commands", [])
+
+                    if not in_game and "start" in available_cmds:
+                        print(
+                            f"At main menu. Sending START {self.character_class}...",
+                            file=sys.stderr,
+                        )
+                        self.process_manager.send_command(f"START {self.character_class}")
+                        break
+                    elif "proceed" in available_cmds:
+                        self.process_manager.send_command("PROCEED")
+                    elif "return" in available_cmds:
+                        self.process_manager.send_command("RETURN")
+                    elif "confirm" in available_cmds:
+                        self.process_manager.send_command("CONFIRM")
+                    else:
+                        # Safe fallback to advance frame and re-poll state
+                        self.process_manager.send_command("STATE")
+
+                    self.current_state = self.process_manager.read_state()
                 else:
-                    # Safe fallback to advance frame and re-poll state
+                    raise RuntimeError(
+                        f"Could not reach main menu after {max_cleanup_steps} cleanup steps. "
+                        f"Last state: in_game={self.current_state.get('in_game')}, "
+                        f"cmds={self.current_state.get('available_commands')}"
+                    )
+
+                # Wait until NeowRoom is loaded (i.e. in_game == True)
+                for wait_step in range(max_cleanup_steps):
+                    self.current_state = self.process_manager.read_state()
+                    if self.current_state.get("in_game", False):
+                        print("New run started.", file=sys.stderr)
+                        break
+                    print(
+                        f"[reset wait #{wait_step}] Still transitioning...",
+                        file=sys.stderr,
+                    )
+                    # Request next state if the game is still transitioning
                     self.process_manager.send_command("STATE")
+                else:
+                    raise RuntimeError(
+                        f"Game did not enter in_game=True after START. "
+                        f"Last state: {self.current_state.get('game_state', {}).get('screen_type', 'unknown')}"
+                    )
 
-                self.current_state = self.process_manager.read_state()
-            else:
-                raise RuntimeError(
-                    f"Could not reach main menu after {max_cleanup_steps} cleanup steps. "
-                    f"Last state: in_game={self.current_state.get('in_game')}, "
-                    f"cmds={self.current_state.get('available_commands')}"
-                )
+                break
+            except (ConnectionResetError, EOFError, TimeoutError, Exception) as e:
+                print(f"Exception during reset (attempt {attempt + 1}/{max_reset_attempts}): {e}", file=sys.stderr)
+                self.process_manager.terminate()
+                self.current_state = {}
+                if attempt == max_reset_attempts - 1:
+                    raise
 
-            # Wait until NeowRoom is loaded (i.e. in_game == True)
-            for wait_step in range(max_cleanup_steps):
-                self.current_state = self.process_manager.read_state()
-                if self.current_state.get("in_game", False):
-                    print("New run started.", file=sys.stderr)
-                    break
-                print(
-                    f"[reset wait #{wait_step}] Still transitioning...",
-                    file=sys.stderr,
-                )
-                # Request next state if the game is still transitioning
-                self.process_manager.send_command("STATE")
-            else:
-                raise RuntimeError(
-                    f"Game did not enter in_game=True after START. "
-                    f"Last state: {self.current_state.get('game_state', {}).get('screen_type', 'unknown')}"
-                )
-
-        except Exception as e:
-            print(f"Exception during reset: {e}", file=sys.stderr)
-            raise
-            
         self._reset_reward_tracking(bootstrap_current=False)
+        self.current_selections.clear()
+        if self.current_state:
+            self.current_state["_env_selections"] = self.current_selections.copy()
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self._refresh_action_mask()
@@ -222,18 +238,56 @@ class SlayTheSpireEnv(gym.Env):
         try:
             action_str = self.action_mapper.get_action_string(action, self.current_state)
             self.process_manager.send_command(action_str)
+            
+            old_screen_type = "NONE"
+            if self.current_state and "game_state" in self.current_state:
+                old_screen_type = self.current_state["game_state"].get("screen_type", "NONE")
+                
             self.current_state = self.process_manager.read_state()
-        except Exception as e:
-            print(f"Exception during step: {e}", file=sys.stderr)
+            
+            new_screen_type = "NONE"
+            if self.current_state and "game_state" in self.current_state:
+                new_screen_type = self.current_state["game_state"].get("screen_type", "NONE")
+                
+            if new_screen_type != old_screen_type:
+                self.current_selections.clear()
+            elif new_screen_type in ["GRID", "HAND_SELECT"]:
+                if action_str.startswith("CHOOSE "):
+                    try:
+                        self.current_selections.add(int(action_str.split()[1]))
+                    except Exception:
+                        pass
+                elif action_str in ["CONFIRM", "RETURN", "CANCEL"]:
+                    self.current_selections.clear()
+            else:
+                self.current_selections.clear()
+                
+            if self.current_state:
+                self.current_state["_env_selections"] = self.current_selections.copy()
+
+        except (ConnectionResetError, EOFError, TimeoutError, Exception) as e:
+            print(f"Watchdog: Java process/socket crashed during step: {e}", file=sys.stderr)
+            # Only clean up — do NOT restart here. ThreadedVecEnv auto-calls
+            # reset() after terminated=True, and reset() already handles
+            # launch_game(). Restarting here blocks Ctrl+C shutdown because
+            # the new Java process launches before KeyboardInterrupt propagates.
+            try:
+                self.process_manager.terminate()
+            except Exception as cleanup_err:
+                print(f"Watchdog: Error during cleanup: {cleanup_err}", file=sys.stderr)
+            self.current_state = {}
+
             mask = np.zeros(self.action_mapper.action_space_size, dtype=np.int8)
             self.current_action_mask = mask
             self._mask_state_id = id(self.current_state)
+            info = self._make_info(mask, error=str(e))
+            info["crashed"] = True
             return (
                 np.zeros(self.state_encoder.shape, dtype=np.float32),
                 0.0,
                 True,
                 False,
-                self._make_info(mask, error=str(e)),
+                info,
             )
 
         # Check for termination
@@ -254,6 +308,10 @@ class SlayTheSpireEnv(gym.Env):
 
         obs = self.state_encoder.encode(self.current_state)
         reward = self._calculate_reward()
+        
+        if self.combat_step_count > MAX_COMBAT_STEPS:
+            terminated = True
+            
         truncated = False
         mask = self._refresh_action_mask()
         info = self._make_info(mask)
@@ -323,6 +381,7 @@ class SlayTheSpireEnv(gym.Env):
         self.last_act = 1
         self.last_in_combat = False
         self.terminal_reward_given = False
+        self.combat_victory_reward_given = False
         self.episode_ended_by_act_completion = False
 
         if not bootstrap_current or not self.current_state:
@@ -463,11 +522,16 @@ class SlayTheSpireEnv(gym.Env):
             hp_delta = current_hp - self.last_player_hp
             reward += self._bounded_hp_reward(hp_delta)
 
+        stall_failure = False
         if in_combat:
+            self.combat_victory_reward_given = False
             # Anti-stall: action-step fallback until a reliable turn counter exists.
             self.combat_step_count += 1
             if self.combat_step_count > COMBAT_STEP_GRACE:
                 reward += ANTI_STALL_PENALTY
+                
+            if self.combat_step_count > MAX_COMBAT_STEPS:
+                stall_failure = True
 
         # ══════════════════════════════════════════
         # B. MACRO-ECONOMY
@@ -477,10 +541,12 @@ class SlayTheSpireEnv(gym.Env):
             # B1. Floor progress — primary signal
             if current_floor > self.last_floor:
                 reward += FLOOR_REWARD * (current_floor - self.last_floor)
+                self.combat_victory_reward_given = False
 
-            # B2. Combat victory (screen transition guard)
-            if screen_type == "COMBAT_REWARD" and self.last_screen_type != "COMBAT_REWARD":
+            # B2. Combat victory (screen transition guard & one-shot victory guard)
+            if screen_type == "COMBAT_REWARD" and not self.combat_victory_reward_given:
                 reward += COMBAT_VICTORY_REWARD
+                self.combat_victory_reward_given = True
                 self.combat_step_count = 0
 
             # B3. Relics acquired, tracked by ID so swaps are not missed
@@ -504,7 +570,7 @@ class SlayTheSpireEnv(gym.Env):
         # C1. Death — include terminal no-longer-in-game states.
         dead_screen = screen_type in ["GAME_OVER", "DEATH"]
         dead_by_hp = hp_is_known and current_hp <= 0
-        terminal_failure = dead_by_hp or dead_screen
+        terminal_failure = dead_by_hp or dead_screen or stall_failure
         if terminal_failure and not self.terminal_reward_given:
             reward += DEATH_PENALTY
             self.terminal_reward_given = True
