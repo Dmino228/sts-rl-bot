@@ -18,7 +18,8 @@ from engine_factory import normalize_game_version
 
 RLLIB_ENV_NAME = "sts-rllib-action-mask-v0"
 DEFAULT_RLLIB_BASE_PORT = 22340
-DEFAULT_CHARACTERS = ("IRONCLAD", "SILENT", "DEFECT", "WATCHER")
+DEFAULT_STS1_CHARACTERS = ("IRONCLAD", "SILENT", "DEFECT", "WATCHER")
+DEFAULT_STS2_CHARACTERS = ("Ironclad", "Silent", "Defect", "Necrobinder", "Regent")
 
 
 class RLLibActionMaskEnv(gym.Wrapper):
@@ -168,7 +169,7 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         )
 
     env = SlayTheSpireEnv(
-        character_class=select_character(worker_id, env_config),
+        character_class=select_character(worker_id, env_config, normalized_game),
         worker_dir=worker_dir,
         worker_id=worker_id,
         base_port=int(_config_value(env_config, "base_port", DEFAULT_RLLIB_BASE_PORT)),
@@ -179,6 +180,9 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         game_version=game_version,
         sts2_cli_path=str(_config_value(env_config, "sts2_cli_path", "sts2-cli")),
         sts2_cli_args=list(_config_value(env_config, "sts2_cli_args", [])),
+        sts2_cli_cwd=_optional_str(_config_value(env_config, "sts2_cli_cwd", None)),
+        sts2_ascension=int(_config_value(env_config, "ascension", 0)),
+        sts2_lang=str(_config_value(env_config, "sts2_lang", "en")),
     )
     return RLLibActionMaskEnv(env)
 
@@ -201,17 +205,30 @@ def resolve_worker_id(env_config: Mapping[str, Any]) -> int:
     return max(worker_index, 0) * max(envs_per_runner, 1) + max(vector_index, 0)
 
 
-def select_character(worker_id: int, env_config: Mapping[str, Any]) -> str:
+def select_character(
+    worker_id: int,
+    env_config: Mapping[str, Any],
+    game_version: str = "sts1",
+) -> str:
     """Select character class by explicit schedule or round-robin default."""
     raw_schedule = _config_value(env_config, "character_schedule", None)
     if raw_schedule is None and bool(_config_value(env_config, "multi_character", False)):
-        raw_schedule = DEFAULT_CHARACTERS
+        raw_schedule = (
+            DEFAULT_STS2_CHARACTERS
+            if normalize_game_version(game_version) == "sts2"
+            else DEFAULT_STS1_CHARACTERS
+        )
 
     if raw_schedule:
-        schedule = [str(item).upper() for item in raw_schedule]
+        schedule = [str(item) for item in raw_schedule]
+        if normalize_game_version(game_version) == "sts1":
+            schedule = [item.upper() for item in schedule]
         return schedule[worker_id % len(schedule)]
 
-    return str(_config_value(env_config, "character_class", "IRONCLAD")).upper()
+    selected = str(_config_value(env_config, "character_class", "IRONCLAD"))
+    if normalize_game_version(game_version) == "sts1":
+        return selected.upper()
+    return selected
 
 
 def prepare_worker_dir(
@@ -269,3 +286,10 @@ def _config_value(
     if isinstance(env_config, Mapping) and key in env_config:
         return env_config[key]
     return getattr(env_config, key, default)
+
+
+def _optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None

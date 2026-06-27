@@ -56,6 +56,9 @@ class SlayTheSpireEnv(gym.Env):
         process_timeout: float = 120.0,
         sts2_cli_path: Optional[str] = None,
         sts2_cli_args: Optional[List[str]] = None,
+        sts2_cli_cwd: Optional[str] = None,
+        sts2_ascension: int = 0,
+        sts2_lang: str = "en",
     ) -> None:
         super().__init__()
 
@@ -81,6 +84,7 @@ class SlayTheSpireEnv(gym.Env):
             ram_usage=self.ram_usage,
             sts2_cli_path=sts2_cli_path,
             sts2_cli_args=sts2_cli_args,
+            sts2_cli_cwd=sts2_cli_cwd,
         )
 
         self.action_mapper = self.engine.create_action_mapper()
@@ -113,6 +117,8 @@ class SlayTheSpireEnv(gym.Env):
         self.terminal_reward_given: bool = False
         self.combat_victory_reward_given: bool = False
         self.episode_ended_by_act_completion: bool = False
+        self.sts2_ascension = int(sts2_ascension)
+        self.sts2_lang = sts2_lang
 
     def reset(
         self,
@@ -130,13 +136,27 @@ class SlayTheSpireEnv(gym.Env):
                     self.process_manager.launch_game()
                     self.process_manager.signal_ready()
 
+                native_reset_state = self.engine.reset_run_state(
+                    process_manager=self.process_manager,
+                    character_class=self.character_class,
+                    seed=seed,
+                    options=options,
+                    ascension=self.sts2_ascension,
+                    lang=self.sts2_lang,
+                )
+                if native_reset_state is not None:
+                    self.current_state = self.engine.normalize_state(native_reset_state)
+                    break
+
                 print(f"Waiting for game state from CommunicationMod (attempt {attempt + 1})...", file=sys.stderr)
 
                 # If we already have state from step() (e.g. death/victory screen),
                 # reuse it instead of blocking on a fresh read_state() — which would
                 # deadlock because CommunicationMod is waiting for OUR command.
                 if not self.current_state:
-                    self.current_state = self.process_manager.read_state()
+                    self.current_state = self.engine.normalize_state(
+                        self.process_manager.read_state()
+                    )
 
                 game_state = self.current_state.get("game_state", {})
                 if self._can_soft_reset_at_act_boundary(game_state):
@@ -180,7 +200,9 @@ class SlayTheSpireEnv(gym.Env):
                         # Safe fallback to advance frame and re-poll state
                         self.process_manager.send_command("STATE")
 
-                    self.current_state = self.process_manager.read_state()
+                    self.current_state = self.engine.normalize_state(
+                        self.process_manager.read_state()
+                    )
                 else:
                     raise RuntimeError(
                         f"Could not reach main menu after {max_cleanup_steps} cleanup steps. "
@@ -190,7 +212,9 @@ class SlayTheSpireEnv(gym.Env):
 
                 # Wait until NeowRoom is loaded (i.e. in_game == True)
                 for wait_step in range(max_cleanup_steps):
-                    self.current_state = self.process_manager.read_state()
+                    self.current_state = self.engine.normalize_state(
+                        self.process_manager.read_state()
+                    )
                     if self.current_state.get("in_game", False):
                         print("New run started.", file=sys.stderr)
                         break
@@ -243,7 +267,9 @@ class SlayTheSpireEnv(gym.Env):
             if self.current_state and "game_state" in self.current_state:
                 old_screen_type = self.current_state["game_state"].get("screen_type", "NONE")
                 
-            self.current_state = self.process_manager.read_state()
+            self.current_state = self.engine.normalize_state(
+                self.process_manager.read_state()
+            )
             
             new_screen_type = "NONE"
             if self.current_state and "game_state" in self.current_state:
@@ -252,7 +278,7 @@ class SlayTheSpireEnv(gym.Env):
             if new_screen_type != old_screen_type:
                 self.current_selections.clear()
             elif new_screen_type in ["GRID", "HAND_SELECT"]:
-                if action_str.startswith("CHOOSE "):
+                if isinstance(action_str, str) and action_str.startswith("CHOOSE "):
                     try:
                         self.current_selections.add(int(action_str.split()[1]))
                     except Exception:

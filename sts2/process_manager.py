@@ -26,11 +26,13 @@ class StS2CliProcessManager:
         worker_dir: Optional[str] = None,
         cli_path: str = "sts2-cli",
         cli_args: Optional[list[str]] = None,
+        cli_cwd: Optional[str] = None,
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
         self.cli_path = cli_path
         self.cli_args = list(cli_args or [])
+        self.cli_cwd = cli_cwd
         self.io = StS2StdIOOverlay()
 
         self._proc: Optional[subprocess.Popen[str]] = None
@@ -42,17 +44,18 @@ class StS2CliProcessManager:
     def launch_game(self) -> None:
         """Start sts2-cli in headless mode."""
         self.stop()
-        cwd = os.path.abspath(self.worker_dir) if self.worker_dir else None
-        if cwd:
-            os.makedirs(cwd, exist_ok=True)
+        log_dir = os.path.abspath(self.worker_dir) if self.worker_dir else None
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
 
         stderr_target: TextIO | int = subprocess.DEVNULL
-        if cwd:
-            stderr_path = os.path.join(cwd, "sts2-cli.stderr.log")
+        if log_dir:
+            stderr_path = os.path.join(log_dir, "sts2-cli.stderr.log")
             self._stderr_file = open(stderr_path, "w", encoding="utf-8")
             stderr_target = self._stderr_file
 
         cmd = [self.cli_path, *self.cli_args]
+        cwd = self._resolve_process_cwd()
         logger.info("[STS2] Starting sts2-cli: %s", " ".join(cmd))
         self._proc = subprocess.Popen(
             cmd,
@@ -71,7 +74,10 @@ class StS2CliProcessManager:
         self._reader_thread.start()
 
     def signal_ready(self) -> None:
-        """No-op hook; sts2-cli is expected to be ready after process start."""
+        """Wait for the initial sts2-cli ready event."""
+        state = self.read_state()
+        if state.get("type") != "ready":
+            raise RuntimeError(f"Expected sts2-cli ready event, got: {state!r}")
 
     def read_state(self) -> dict[str, Any]:
         """Read one JSON state emitted by sts2-cli."""
@@ -99,8 +105,8 @@ class StS2CliProcessManager:
 
         raise TimeoutError(f"No sts2-cli JSON state received within {self.timeout}s.")
 
-    def send_command(self, command: str) -> None:
-        """Send a single command to sts2-cli stdin."""
+    def send_command(self, command: Any) -> None:
+        """Send a single JSON command to sts2-cli stdin."""
         if self._proc is None or self._proc.stdin is None:
             raise EOFError("sts2-cli process is not running.")
         try:
@@ -109,6 +115,34 @@ class StS2CliProcessManager:
         except OSError:
             logger.exception("[STS2] Failed to send command: %s", command)
             raise
+
+    def _resolve_process_cwd(self) -> Optional[str]:
+        if self.cli_cwd:
+            cwd = os.path.abspath(self.cli_cwd)
+            os.makedirs(cwd, exist_ok=True)
+            return cwd
+
+        project_path = self._find_project_path()
+        if project_path:
+            cursor = os.path.abspath(os.path.dirname(project_path))
+            while True:
+                if os.path.isfile(os.path.join(cursor, "global.json")):
+                    return cursor
+                parent = os.path.dirname(cursor)
+                if parent == cursor:
+                    break
+                cursor = parent
+
+        if self.worker_dir:
+            return os.path.abspath(self.worker_dir)
+        return None
+
+    def _find_project_path(self) -> Optional[str]:
+        for value in [self.cli_path, *self.cli_args]:
+            candidate = str(value).strip('"')
+            if candidate.lower().endswith(".csproj") and os.path.isfile(candidate):
+                return candidate
+        return None
 
     def is_process_alive(self) -> bool:
         if self._proc is None:

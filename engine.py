@@ -24,8 +24,8 @@ class ProcessManagerProtocol(Protocol):
     def read_state(self) -> dict[str, Any]:
         """Read and parse one raw JSON state from the game engine."""
 
-    def send_command(self, command: str) -> None:
-        """Send one text command to the game engine."""
+    def send_command(self, command: Any) -> None:
+        """Send one engine-specific command to the game engine."""
 
     def stop(self) -> None:
         """Stop the backing process and release I/O resources."""
@@ -56,7 +56,7 @@ class ActionMapperProtocol(Protocol):
         self,
         action_id: int,
         state: Optional[dict[str, Any]] = None,
-    ) -> str:
+    ) -> Any:
         """Return the command sent to the process manager."""
 
 
@@ -87,6 +87,7 @@ class GameEngine(ABC):
         ram_usage: str,
         sts2_cli_path: Optional[str] = None,
         sts2_cli_args: Optional[list[str]] = None,
+        sts2_cli_cwd: Optional[str] = None,
     ) -> ProcessManagerProtocol:
         """Create the process manager for this game engine."""
 
@@ -118,14 +119,39 @@ class GameEngine(ABC):
         """Build the command that starts a new run from an engine menu."""
         return f"START {character_class}"
 
+    def reset_run_state(
+        self,
+        *,
+        process_manager: ProcessManagerProtocol,
+        character_class: str,
+        seed: Optional[int],
+        options: Optional[dict[str, Any]],
+        ascension: int = 0,
+        lang: str = "en",
+    ) -> Optional[dict[str, Any]]:
+        """Start/reset a run for engines with a native reset protocol.
+
+        Returning ``None`` tells the shared environment to use the legacy StS1
+        menu-cleanup flow.
+        """
+        return None
+
+    def normalize_state(self, raw_state: dict[str, Any]) -> dict[str, Any]:
+        """Adapt an engine-native JSON response to the shared env shape."""
+        return raw_state
+
     def should_launch_on_reset(
         self,
         process_manager: ProcessManagerProtocol,
     ) -> bool:
         """Return True when reset() should launch the process before reading."""
+        if not getattr(process_manager, "auto_launch", False):
+            return False
+        is_alive = getattr(process_manager, "is_process_alive", None)
+        if callable(is_alive) and getattr(process_manager, "_proc", None) is not None:
+            return not bool(is_alive())
         return bool(
-            getattr(process_manager, "auto_launch", False)
-            and getattr(process_manager, "_proc", None) is None
+            getattr(process_manager, "_proc", None) is None
         )
 
     def can_soft_reset_at_act_boundary(

@@ -38,6 +38,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--game-version", default="1", choices=["1", "2", "sts1", "sts2"])
     parser.add_argument("--sts2-cli-path", default="sts2-cli")
     parser.add_argument(
+        "--sts2-cli-cwd",
+        default="",
+        help=(
+            "Working directory for sts2-cli/dotnet. Use the sts2-cli repo root "
+            "when relying on its global.json."
+        ),
+    )
+    parser.add_argument(
         "--sts2-cli-arg",
         action="append",
         default=[],
@@ -52,7 +60,13 @@ def parse_args() -> argparse.Namespace:
             "StS1 validates IRONCLAD/SILENT/DEFECT/WATCHER."
         ),
     )
-    parser.add_argument("--multi-character", action="store_true", help="Round-robin all four characters.")
+    parser.add_argument("--ascension", type=int, default=0)
+    parser.add_argument("--sts2-lang", default="en")
+    parser.add_argument(
+        "--multi-character",
+        action="store_true",
+        help="Round-robin the default roster for the selected game version.",
+    )
     parser.add_argument("--ram-usage", choices=["low", "default", "safe"], default="default")
     parser.add_argument("--base-port", type=int, default=DEFAULT_RLLIB_BASE_PORT)
     parser.add_argument("--use-xvfb", action="store_true")
@@ -126,6 +140,9 @@ def main() -> None:
             "num_envs_per_env_runner": args.envs_per_worker,
             "sts2_cli_path": args.sts2_cli_path,
             "sts2_cli_args": args.sts2_cli_args,
+            "sts2_cli_cwd": args.sts2_cli_cwd,
+            "ascension": args.ascension,
+            "sts2_lang": args.sts2_lang,
         }
 
     config = PPOConfig()

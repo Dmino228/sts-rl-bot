@@ -36,6 +36,7 @@ class StS1Engine(GameEngine):
         ram_usage: str,
         sts2_cli_path: Optional[str] = None,
         sts2_cli_args: Optional[list[str]] = None,
+        sts2_cli_cwd: Optional[str] = None,
     ) -> ProcessManagerProtocol:
         return GameProcessManager(
             timeout=timeout,
