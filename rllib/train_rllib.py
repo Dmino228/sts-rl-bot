@@ -35,7 +35,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timesteps", type=int, default=1_000_000, help="Additional env steps to train.")
     parser.add_argument("--base-env-dir", default=os.path.join(PROJECT_ROOT, "SlayTheSpire"))
     parser.add_argument("--workspace-dir", default=os.path.join(PROJECT_ROOT, "rllib_workers"))
-    parser.add_argument("--character", default="IRONCLAD", choices=["IRONCLAD", "SILENT", "DEFECT", "WATCHER"])
+    parser.add_argument("--game-version", default="1", choices=["1", "2", "sts1", "sts2"])
+    parser.add_argument("--sts2-cli-path", default="sts2-cli")
+    parser.add_argument(
+        "--sts2-cli-arg",
+        action="append",
+        default=[],
+        dest="sts2_cli_args",
+        help="Extra argument passed to sts2-cli. Can be repeated.",
+    )
+    parser.add_argument(
+        "--character",
+        default="IRONCLAD",
+        help=(
+            "Character/run archetype to request from the selected engine. "
+            "StS1 validates IRONCLAD/SILENT/DEFECT/WATCHER."
+        ),
+    )
     parser.add_argument("--multi-character", action="store_true", help="Round-robin all four characters.")
     parser.add_argument("--ram-usage", choices=["low", "default", "safe"], default="default")
     parser.add_argument("--base-port", type=int, default=DEFAULT_RLLIB_BASE_PORT)
@@ -99,6 +115,7 @@ def main() -> None:
         env_config = {
             "base_env_dir": args.base_env_dir,
             "workspace_dir": args.workspace_dir,
+            "game_version": args.game_version,
             "character_class": args.character,
             "multi_character": args.multi_character,
             "ram_usage": args.ram_usage,
@@ -107,6 +124,8 @@ def main() -> None:
             "force_rebuild": args.force_rebuild,
             "debug_env_info": args.debug_env_info,
             "num_envs_per_env_runner": args.envs_per_worker,
+            "sts2_cli_path": args.sts2_cli_path,
+            "sts2_cli_args": args.sts2_cli_args,
         }
 
     config = PPOConfig()

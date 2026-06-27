@@ -13,6 +13,7 @@ import numpy as np
 from gymnasium import spaces
 
 from env import SlayTheSpireEnv
+from engine_factory import normalize_game_version
 
 
 RLLIB_ENV_NAME = "sts-rllib-action-mask-v0"
@@ -144,19 +145,27 @@ def register_rllib_env() -> None:
 def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
     """Create one RLlib-compatible STS env from an EnvContext/config dict."""
     worker_id = resolve_worker_id(env_config)
-    base_env_dir = os.path.abspath(
-        str(_config_value(env_config, "base_env_dir", "SlayTheSpire"))
-    )
+    game_version = _config_value(env_config, "game_version", 1)
+    normalized_game = normalize_game_version(game_version)
     workspace_dir = os.path.abspath(
         str(_config_value(env_config, "workspace_dir", "rllib_workers"))
     )
-    force_rebuild = bool(_config_value(env_config, "force_rebuild", False))
-    worker_dir = prepare_worker_dir(
-        base_env_dir=base_env_dir,
-        workspace_dir=workspace_dir,
-        worker_id=worker_id,
-        force_rebuild=force_rebuild,
-    )
+    if normalized_game == "sts1":
+        base_env_dir = os.path.abspath(
+            str(_config_value(env_config, "base_env_dir", "SlayTheSpire"))
+        )
+        force_rebuild = bool(_config_value(env_config, "force_rebuild", False))
+        worker_dir = prepare_worker_dir(
+            base_env_dir=base_env_dir,
+            workspace_dir=workspace_dir,
+            worker_id=worker_id,
+            force_rebuild=force_rebuild,
+        )
+    else:
+        worker_dir = prepare_sts2_worker_dir(
+            workspace_dir=workspace_dir,
+            worker_id=worker_id,
+        )
 
     env = SlayTheSpireEnv(
         character_class=select_character(worker_id, env_config),
@@ -167,6 +176,9 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         include_raw_state_in_info=bool(_config_value(env_config, "debug_env_info", False)),
         include_action_mask_in_info=True,
         ram_usage=str(_config_value(env_config, "ram_usage", "default")),
+        game_version=game_version,
+        sts2_cli_path=str(_config_value(env_config, "sts2_cli_path", "sts2-cli")),
+        sts2_cli_args=list(_config_value(env_config, "sts2_cli_args", [])),
     )
     return RLLibActionMaskEnv(env)
 
@@ -222,6 +234,13 @@ def prepare_worker_dir(
         shutil.copytree(base_env_dir, worker_dir, dirs_exist_ok=False)
 
     clean_worker_state(worker_dir)
+    return worker_dir
+
+
+def prepare_sts2_worker_dir(workspace_dir: str, worker_id: int) -> str:
+    """Create an isolated lightweight workspace for one sts2-cli worker."""
+    worker_dir = os.path.join(workspace_dir, f"sts2_worker_{worker_id}")
+    os.makedirs(worker_dir, exist_ok=True)
     return worker_dir
 
 

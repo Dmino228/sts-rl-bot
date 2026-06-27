@@ -1,9 +1,4 @@
-"""
-SlayTheSpireEnv — Gymnasium wrapper for CommunicationMod.
-
-This environment does NOT launch the game. CommunicationMod launches us.
-We communicate via stdin (receive JSON state) and stdout (send commands).
-"""
+"""Game-version router exposed as a Gymnasium environment."""
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -11,9 +6,7 @@ import numpy as np
 import sys
 from typing import Optional, Tuple, Dict, Any, List
 
-from process_manager import GameProcessManager
-from action_space import ActionMapper, ActionMasker
-from state_encoder import StateEncoder
+from engine_factory import create_game_engine
 
 
 # V3.2 reward constants
@@ -40,12 +33,13 @@ VALID_CHARACTERS = {"IRONCLAD", "SILENT", "DEFECT", "WATCHER"}
 
 class SlayTheSpireEnv(gym.Env):
     """
-    Gymnasium Environment for Slay the Spire via CommunicationMod.
+    Gymnasium Environment for Slay the Spire engines.
 
     Supports:
+    - Dynamic engine selection via `game_version` (1/sts1 or 2/sts2).
     - Multi-character generalization via `character_class`.
     - Directory-isolated parallel workers via `worker_dir`.
-    - Headless xvfb launching via `use_xvfb`.
+    - StS1 Java/CommunicationMod and StS2 sts2-cli process managers.
     """
 
     def __init__(
@@ -58,16 +52,17 @@ class SlayTheSpireEnv(gym.Env):
         include_raw_state_in_info: bool = True,
         include_action_mask_in_info: bool = True,
         ram_usage: str = "default",
+        game_version: int | str = 1,
+        process_timeout: float = 120.0,
+        sts2_cli_path: Optional[str] = None,
+        sts2_cli_args: Optional[List[str]] = None,
     ) -> None:
         super().__init__()
 
-        # Validate character
-        self.character_class = character_class.upper()
-        if self.character_class not in VALID_CHARACTERS:
-            raise ValueError(
-                f"Invalid character_class '{character_class}'. "
-                f"Must be one of {VALID_CHARACTERS}"
-            )
+        self.engine = create_game_engine(game_version)
+        self.game_version = self.engine.game_version
+        self.character_class = self.engine.normalize_character(character_class)
+        self.engine.validate_character(self.character_class)
 
         self.worker_dir = worker_dir
         self.worker_id = worker_id
@@ -77,18 +72,20 @@ class SlayTheSpireEnv(gym.Env):
         self.include_action_mask_in_info = include_action_mask_in_info
         self.ram_usage = ram_usage.lower()
 
-        self.process_manager = GameProcessManager(
-            timeout=120.0,
+        self.process_manager = self.engine.create_process_manager(
+            timeout=process_timeout,
             worker_dir=worker_dir,
             worker_id=worker_id,
             base_port=base_port,
             use_xvfb=use_xvfb,
             ram_usage=self.ram_usage,
+            sts2_cli_path=sts2_cli_path,
+            sts2_cli_args=sts2_cli_args,
         )
 
-        self.action_mapper = ActionMapper()
-        self.action_masker = ActionMasker()
-        self.state_encoder = StateEncoder()
+        self.action_mapper = self.engine.create_action_mapper()
+        self.action_masker = self.engine.create_action_masker()
+        self.state_encoder = self.engine.create_state_encoder()
 
         self.action_space = gym.spaces.Discrete(self.action_mapper.action_space_size)
         self.observation_space = self.state_encoder.observation_space
@@ -128,8 +125,8 @@ class SlayTheSpireEnv(gym.Env):
         max_reset_attempts = 3
         for attempt in range(max_reset_attempts):
             try:
-                # Launch the game subprocess if running in Python-as-parent mode
-                if self.worker_dir is not None and self.process_manager._proc is None:
+                # Launch the game subprocess if this engine runs Python-as-parent.
+                if self._should_launch_process_on_reset():
                     self.process_manager.launch_game()
                     self.process_manager.signal_ready()
 
@@ -164,11 +161,14 @@ class SlayTheSpireEnv(gym.Env):
                     available_cmds = self.current_state.get("available_commands", [])
 
                     if not in_game and "start" in available_cmds:
+                        start_command = self.engine.start_run_command(
+                            self.character_class
+                        )
                         print(
-                            f"At main menu. Sending START {self.character_class}...",
+                            f"At main menu. Sending {start_command}...",
                             file=sys.stderr,
                         )
-                        self.process_manager.send_command(f"START {self.character_class}")
+                        self.process_manager.send_command(start_command)
                         break
                     elif "proceed" in available_cmds:
                         self.process_manager.send_command("PROCEED")
@@ -331,6 +331,10 @@ class SlayTheSpireEnv(gym.Env):
             return self._refresh_action_mask()
         return self.current_action_mask
 
+    def action_masks(self) -> np.ndarray:
+        """Return the current legal-action mask for mask-aware RL libraries."""
+        return self.get_action_mask()
+
     def _refresh_action_mask(self) -> np.ndarray:
         """Compute and cache the action mask for the current state."""
         self.current_action_mask = self.action_masker.get_mask(self.current_state)
@@ -354,17 +358,16 @@ class SlayTheSpireEnv(gym.Env):
 
     def _can_soft_reset_at_act_boundary(self, game_state: Dict[str, Any]) -> bool:
         """Return True when reset() should continue from a completed act."""
-        if not isinstance(game_state, dict):
-            return False
-        if not self.current_state.get("in_game", False):
-            return False
+        return self.engine.can_soft_reset_at_act_boundary(
+            self.current_state,
+            self.episode_ended_by_act_completion,
+        )
 
-        screen_type = game_state.get("screen_type", "NONE")
-        if screen_type in ["GAME_OVER", "DEATH"]:
-            return False
-
-        current_act = game_state.get("act", 1)
-        return self.episode_ended_by_act_completion or current_act > 1
+    def _should_launch_process_on_reset(self) -> bool:
+        """Return True when reset should launch or relaunch the engine process."""
+        if hasattr(self.process_manager, "auto_launch"):
+            return self.engine.should_launch_on_reset(self.process_manager)
+        return self.worker_dir is not None and getattr(self.process_manager, "_proc", None) is None
 
     def _reset_reward_tracking(self, bootstrap_current: bool = False) -> None:
         """Reset reward deltas, optionally seeding them from current_state."""
