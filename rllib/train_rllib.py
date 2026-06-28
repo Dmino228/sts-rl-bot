@@ -63,6 +63,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ascension", type=int, default=0)
     parser.add_argument("--sts2-lang", default="en")
     parser.add_argument(
+        "--sts2-capture-stderr",
+        action="store_true",
+        help="Write each sts2-cli worker stderr stream to sts2-cli.stderr.log for debugging.",
+    )
+    parser.add_argument(
         "--multi-character",
         action="store_true",
         help="Round-robin the default roster for the selected game version.",
@@ -141,6 +146,7 @@ def main() -> None:
             "sts2_cli_path": args.sts2_cli_path,
             "sts2_cli_args": args.sts2_cli_args,
             "sts2_cli_cwd": args.sts2_cli_cwd,
+            "sts2_capture_stderr": args.sts2_capture_stderr,
             "ascension": args.ascension,
             "sts2_lang": args.sts2_lang,
         }

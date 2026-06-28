@@ -27,12 +27,14 @@ class StS2CliProcessManager:
         cli_path: str = "sts2-cli",
         cli_args: Optional[list[str]] = None,
         cli_cwd: Optional[str] = None,
+        capture_stderr: bool = False,
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
         self.cli_path = cli_path
         self.cli_args = list(cli_args or [])
         self.cli_cwd = cli_cwd
+        self.capture_stderr = capture_stderr
         self.io = StS2StdIOOverlay()
 
         self._proc: Optional[subprocess.Popen[str]] = None
@@ -49,7 +51,7 @@ class StS2CliProcessManager:
             os.makedirs(log_dir, exist_ok=True)
 
         stderr_target: TextIO | int = subprocess.DEVNULL
-        if log_dir:
+        if log_dir and self.capture_stderr:
             stderr_path = os.path.join(log_dir, "sts2-cli.stderr.log")
             self._stderr_file = open(stderr_path, "w", encoding="utf-8")
             stderr_target = self._stderr_file

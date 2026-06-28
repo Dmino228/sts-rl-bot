@@ -40,6 +40,7 @@ class StS2Engine(GameEngine):
         sts2_cli_path: Optional[str] = None,
         sts2_cli_args: Optional[list[str]] = None,
         sts2_cli_cwd: Optional[str] = None,
+        sts2_capture_stderr: bool = False,
     ) -> ProcessManagerProtocol:
         return StS2CliProcessManager(
             timeout=timeout,
@@ -47,6 +48,7 @@ class StS2Engine(GameEngine):
             cli_path=sts2_cli_path or "sts2-cli",
             cli_args=sts2_cli_args or [],
             cli_cwd=sts2_cli_cwd,
+            capture_stderr=sts2_capture_stderr,
         )
 
     def create_state_encoder(self) -> StateEncoderProtocol:

@@ -57,6 +57,7 @@ class SlayTheSpireEnv(gym.Env):
         sts2_cli_path: Optional[str] = None,
         sts2_cli_args: Optional[List[str]] = None,
         sts2_cli_cwd: Optional[str] = None,
+        sts2_capture_stderr: bool = False,
         sts2_ascension: int = 0,
         sts2_lang: str = "en",
     ) -> None:
@@ -85,6 +86,7 @@ class SlayTheSpireEnv(gym.Env):
             sts2_cli_path=sts2_cli_path,
             sts2_cli_args=sts2_cli_args,
             sts2_cli_cwd=sts2_cli_cwd,
+            sts2_capture_stderr=sts2_capture_stderr,
         )
 
         self.action_mapper = self.engine.create_action_mapper()

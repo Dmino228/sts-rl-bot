@@ -181,6 +181,7 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_cli_path=str(_config_value(env_config, "sts2_cli_path", "sts2-cli")),
         sts2_cli_args=list(_config_value(env_config, "sts2_cli_args", [])),
         sts2_cli_cwd=_optional_str(_config_value(env_config, "sts2_cli_cwd", None)),
+        sts2_capture_stderr=bool(_config_value(env_config, "sts2_capture_stderr", False)),
         sts2_ascension=int(_config_value(env_config, "ascension", 0)),
         sts2_lang=str(_config_value(env_config, "sts2_lang", "en")),
     )
