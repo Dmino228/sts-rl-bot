@@ -12,6 +12,8 @@ from sts2.action_space import (
     BACK_ACTION,
     CHOICE_BASE,
     END_TURN_ACTION,
+    PLAY_CARD_BASE,
+    POTION_BASE,
     StS2ActionMapper,
     StS2ActionMasker,
     TARGETED_PLAY_BASE,
@@ -212,6 +214,114 @@ def test_sts2_card_select_optional_keeps_skip_action():
     }
 
 
+def test_sts2_combat_card_select_selects_when_reached():
+    state = normalize_sts2_state(
+        {
+            "type": "decision",
+            "decision": "card_select",
+            "context": {"act": 1, "floor": 5, "room_type": "Monster"},
+            "cards": [
+                {"index": 0, "name": "Anger"},
+                {"index": 1, "name": "Shrug It Off"},
+                {"index": 2, "name": "Pommel Strike"},
+            ],
+            "min_select": 1,
+            "max_select": 1,
+            "player": {"hp": 70, "max_hp": 80},
+        }
+    )
+
+    mapper = StS2ActionMapper()
+    mask = StS2ActionMasker().get_mask(state)
+
+    assert mask[CHOICE_BASE + 2] == 1
+    assert mask[BACK_ACTION] == 0
+    assert mapper.get_action_string(CHOICE_BASE + 2, state) == {
+        "cmd": "action",
+        "action": "select_cards",
+        "args": {"indices": "2"},
+    }
+
+
+def test_sts2_masks_combat_cards_that_spawn_card_select():
+    state = normalize_sts2_state(
+        {
+            "type": "decision",
+            "decision": "combat_play",
+            "context": {"act": 1, "floor": 5, "room_type": "Monster"},
+            "energy": 3,
+            "max_energy": 3,
+            "hand": [
+                {
+                    "index": 0,
+                    "id": "CARD.SEEKER_STRIKE",
+                    "name": "Seeker Strike",
+                    "cost": 1,
+                    "type": "Attack",
+                    "target_type": "AnyEnemy",
+                    "can_play": True,
+                    "description": "Deal 9 damage. Choose 1 of 3 cards in your Draw Pile.",
+                },
+                {
+                    "index": 1,
+                    "id": "CARD.ARMAMENTS",
+                    "name": "Armaments",
+                    "cost": 1,
+                    "type": "Skill",
+                    "target_type": "Self",
+                    "can_play": True,
+                    "description": "Gain Block. Upgrade a card in your Hand.",
+                },
+            ],
+            "enemies": [{"index": 0, "hp": 30, "max_hp": 30}],
+            "player": {"hp": 70, "max_hp": 80},
+        }
+    )
+
+    mask = StS2ActionMasker().get_mask(state)
+
+    assert mask[TARGETED_PLAY_BASE] == 0
+    assert mask[PLAY_CARD_BASE + 1] == 0
+    assert mask[END_TURN_ACTION] == 1
+
+
+def test_sts2_masks_potions_that_spawn_card_select():
+    state = normalize_sts2_state(
+        {
+            "type": "decision",
+            "decision": "combat_play",
+            "context": {"act": 1, "floor": 5, "room_type": "Monster"},
+            "energy": 3,
+            "max_energy": 3,
+            "hand": [],
+            "enemies": [{"index": 0, "hp": 30, "max_hp": 30}],
+            "player": {
+                "hp": 70,
+                "max_hp": 80,
+                "potions": [
+                    {
+                        "index": 0,
+                        "name": "Skill Potion",
+                        "target_type": "Self",
+                        "description": "Choose 1 of 3 random Skill cards.",
+                    },
+                    {
+                        "index": 1,
+                        "name": "Block Potion",
+                        "target_type": "Self",
+                        "description": "Gain Block.",
+                    },
+                ],
+            },
+        }
+    )
+
+    mask = StS2ActionMasker().get_mask(state)
+
+    assert mask[POTION_BASE] == 0
+    assert mask[POTION_BASE + 1] == 1
+
+
 # ---------------------------------------------------------------------------
 # Compact Encoder Tests
 # ---------------------------------------------------------------------------
@@ -351,8 +461,8 @@ def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
         "decision": "card_select",
         "min_select": 1,
         "max_select": 2,
-        "cards": [{"index": 0}, {"index": 1}],
-        "context": {"act": 1, "floor": 4},
+        "cards": [{"index": 0, "name": "Strike", "type": "Attack"}, {"index": 1}],
+        "context": {"act": 1, "floor": 4, "room_type": "Monster"},
     }
 
     message = manager._timeout_message("No sts2-cli JSON state received")
@@ -363,6 +473,8 @@ def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
     assert "'decision': 'card_select'" in message
     assert "'max_select': 2" in message
     assert "'cards_count': 2" in message
+    assert "'room_type': 'Monster'" in message
+    assert "'name': 'Strike'" in message
 
 
 def test_select_character_uses_sts2_roster_for_multi_character():

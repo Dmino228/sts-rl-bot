@@ -8,6 +8,7 @@ import queue
 import subprocess
 import threading
 import time
+from collections import deque
 from typing import Any, Optional, TextIO
 
 from sts2.io import StS2StdIOOverlay
@@ -41,6 +42,7 @@ class StS2CliProcessManager:
         self._stdout_queue: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_file: Optional[TextIO] = None
+        self._stderr_path: Optional[str] = None
         self._last_state: Optional[dict[str, Any]] = None
         self._last_command: Optional[Any] = None
         self._last_command_at: Optional[float] = None
@@ -54,8 +56,11 @@ class StS2CliProcessManager:
 
         stderr_target: TextIO | int = subprocess.DEVNULL
         if log_dir and self.capture_stderr:
-            stderr_path = os.path.join(log_dir, "sts2-cli.stderr.log")
-            self._stderr_file = open(stderr_path, "w", encoding="utf-8")
+            self._stderr_path = os.path.join(log_dir, "sts2-cli.stderr.log")
+            self._stderr_file = open(self._stderr_path, "a", encoding="utf-8", buffering=1)
+            self._stderr_file.write(
+                f"\n--- sts2-cli start pid=pending at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+            )
             stderr_target = self._stderr_file
 
         cmd = [self.cli_path, *self.cli_args]
@@ -130,6 +135,7 @@ class StS2CliProcessManager:
             "worker_id": self._worker_id_from_dir(),
             "last_command": self._last_command,
             "last_state": self._state_summary(self._last_state),
+            "stderr_tail": self._stderr_tail(),
             "last_command_age_s": (
                 None
                 if self._last_command_at is None
@@ -145,6 +151,7 @@ class StS2CliProcessManager:
             f"(worker={diag['worker_id']} pid={diag['pid']} alive={diag['alive']} "
             f"last_command={diag['last_command']!r} "
             f"last_state={diag['last_state']!r} "
+            f"stderr_tail={diag['stderr_tail']!r} "
             f"last_command_age_s={diag['last_command_age_s']})."
         )
 
@@ -164,13 +171,43 @@ class StS2CliProcessManager:
             value = state.get(key)
             if isinstance(value, list):
                 summary[f"{key}_count"] = len(value)
+                if key == "cards":
+                    summary["cards_preview"] = self._item_preview(value)
 
         context = state.get("context")
         if isinstance(context, dict):
             summary["act"] = context.get("act")
             summary["floor"] = context.get("floor")
+            summary["room_type"] = context.get("room_type")
 
         return summary
+
+    def _item_preview(self, items: list[Any], limit: int = 5) -> list[dict[str, Any]]:
+        preview: list[dict[str, Any]] = []
+        for slot, item in enumerate(items[:limit]):
+            if not isinstance(item, dict):
+                continue
+            preview.append(
+                {
+                    "slot": slot,
+                    "index": item.get("index"),
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "type": item.get("type"),
+                }
+            )
+        return preview
+
+    def _stderr_tail(self, max_lines: int = 20) -> list[str]:
+        if not self._stderr_path or not os.path.isfile(self._stderr_path):
+            return []
+        try:
+            if self._stderr_file is not None:
+                self._stderr_file.flush()
+            with open(self._stderr_path, "r", encoding="utf-8", errors="replace") as log_file:
+                return [line.rstrip() for line in deque(log_file, maxlen=max_lines)]
+        except OSError:
+            return []
 
     def _worker_id_from_dir(self) -> str:
         if not self.worker_dir:

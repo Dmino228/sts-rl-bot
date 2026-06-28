@@ -27,6 +27,24 @@ QUIT_ACTION = 99
 
 JsonCommand = dict[str, Any]
 
+CARD_SELECTION_SOURCE_IDS = {
+    "ARMAMENTS",
+    "BURNING_PACT",
+    "SEEKER_STRIKE",
+    "TRUE_GRIT",
+}
+
+CARD_SELECTION_DESCRIPTION_MARKERS = (
+    "choose ",
+    "select ",
+    "upgrade a card",
+    "exhaust 1 card",
+    "exhaust a card",
+    "exhaust any number of cards",
+    "draw pile",
+    "discard pile",
+)
+
 
 class StS2ActionMapper:
     """Map the shared 100-way discrete action space to sts2-cli JSON commands."""
@@ -122,6 +140,8 @@ def _add_combat_actions(commands: dict[int, JsonCommand], state: dict[str, Any])
             continue
         if not bool(card.get("can_play", True)):
             continue
+        if _is_card_selection_source(card):
+            continue
 
         card_index = _int(card.get("index"), slot)
         target_type = str(card.get("target_type") or "").lower()
@@ -143,6 +163,8 @@ def _add_combat_actions(commands: dict[int, JsonCommand], state: dict[str, Any])
     potions = _as_list(_player(state).get("potions"))[:MAX_POTIONS]
     for slot, potion in enumerate(potions):
         if not isinstance(potion, Mapping):
+            continue
+        if _is_card_selection_source(potion):
             continue
         target_type = str(potion.get("target_type") or "").lower()
         potion_index = _int(potion.get("index"), slot)
@@ -282,6 +304,24 @@ def _player(state: dict[str, Any]) -> Mapping[str, Any]:
 
 def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _is_card_selection_source(item: Mapping[str, Any]) -> bool:
+    identifier = _normalized_identifier(item.get("id") or item.get("name"))
+    if identifier in CARD_SELECTION_SOURCE_IDS:
+        return True
+
+    description = str(item.get("description") or "").lower()
+    if not description:
+        return False
+    return any(marker in description for marker in CARD_SELECTION_DESCRIPTION_MARKERS)
+
+
+def _normalized_identifier(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return "_".join(text.replace("-", " ").split())
 
 
 def _bounded_select_count(value: int, cards: list[Any]) -> int:
