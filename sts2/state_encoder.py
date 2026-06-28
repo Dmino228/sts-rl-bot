@@ -225,7 +225,8 @@ class StS2StateEncoder:
             obs[off + 6] = 1.0 if card_type == "curse" else 0.0
             obs[off + 7] = 1.0 if card_type == "status" else 0.0
 
-            # Target flags (5): none, self, allenemies, anyenemy, ally
+            # Target flags (4): self, anyenemy/randomenemy, allenemies, ally.
+            # "none" is represented implicitly by all-zero target flags.
             target = str(card.get("target_type") or "").replace("_", "").lower()
             obs[off + 8] = 1.0 if target == "self" else 0.0
             obs[off + 9] = 1.0 if target in ("anyenemy", "randomenemy") else 0.0
