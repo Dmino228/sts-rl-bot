@@ -8,6 +8,8 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 
+from sts2.spire_codex import SpireCodex
+
 
 SCREEN_TYPES = (
     "NONE",
@@ -62,12 +64,32 @@ INTENT_IDS = {
     "stun": 10.0,
     "unknown": 0.0,
 }
-
-
 class StS2StateEncoder:
     """Encode sts2-cli decision JSON into the shared flat observation shape."""
 
-    def __init__(self, size: int = 205) -> None:
+    def __init__(self, codex: SpireCodex | None = None) -> None:
+        self.codex = codex or SpireCodex()
+        
+        self.legacy_size = 205
+        self.card_count = self.codex.get_card_count()
+        self.relic_count = self.codex.get_relic_count()
+        self.potion_count = self.codex.get_potion_count()
+        self.monster_count = self.codex.get_monster_count()
+        
+        self.hand_slots = 10
+        self.potion_slots = 5
+        self.monster_slots = 5
+        
+        self.card_slot_size = self.card_count + 5  # ID one-hot + 5 static stats
+        self.monster_slot_size = self.monster_count + 4  # ID one-hot + 4 power stats
+        
+        size = (
+            self.legacy_size
+            + (self.hand_slots * self.card_slot_size)
+            + self.relic_count
+            + (self.potion_slots * self.potion_count)
+            + (self.monster_slots * self.monster_slot_size)
+        )
         self.shape = (size,)
         self.observation_space = gym.spaces.Box(
             low=-1.0,
@@ -79,6 +101,7 @@ class StS2StateEncoder:
     def encode(self, state: dict[str, Any]) -> np.ndarray:
         obs = np.zeros(self.shape, dtype=np.float32)
 
+        # 1. Override path for testing stubs
         raw_obs = state.get("observation")
         if raw_obs is None:
             raw_obs = state.get("game_state", {}).get("observation")
@@ -89,11 +112,13 @@ class StS2StateEncoder:
             np.clip(obs, -1.0, 1.0, out=obs)
             return obs
 
+        # Normalization of raw state
         normalized = normalize_sts2_state(state)
         game_state = _mapping(normalized.get("game_state"))
         player = _mapping(normalized.get("player"))
         combat_state = _mapping(game_state.get("combat_state"))
 
+        # 2. Populate base 205 features exactly as in the legacy system
         screen_type = str(game_state.get("screen_type", "UNKNOWN")).upper()
         _set_one_hot(obs, 0, SCREEN_TYPES, screen_type)
 
@@ -120,8 +145,80 @@ class StS2StateEncoder:
         _encode_enemies(obs, 120, _list(normalized.get("enemies")))
         _encode_decision_items(obs, 170, normalized)
 
+        # 3. Append Hand Cards Semantic Profiles
+        hand_offset = self.legacy_size
+        hand = _list(normalized.get("hand"))
+        for slot in range(self.hand_slots):
+            slot_start = hand_offset + slot * self.card_slot_size
+            if slot < len(hand) and isinstance(hand[slot], Mapping):
+                card = hand[slot]
+                card_id = card.get("id") or card.get("name")
+                card_idx = self.codex.get_card_index(card_id)
+                if card_idx is not None:
+                    # One-hot identity
+                    obs[slot_start + card_idx] = 1.0
+                    # Static metadata
+                    meta = self.codex.get_card_static_metadata(card_idx)
+                    obs[slot_start + self.card_count + 0] = meta["cost"] / 5.0
+                    obs[slot_start + self.card_count + 1] = meta["is_x"]
+                    obs[slot_start + self.card_count + 2] = meta["is_attack"]
+                    obs[slot_start + self.card_count + 3] = meta["is_skill"]
+                    obs[slot_start + self.card_count + 4] = meta["is_power"]
+
+        # 4. Append Relics Semantic Profile
+        relics_offset = hand_offset + self.hand_slots * self.card_slot_size
+        relics = _list(player.get("relics")) or _list(game_state.get("relics"))
+        for relic in relics:
+            relic_id = relic.get("id") or relic.get("name") if isinstance(relic, Mapping) else relic
+            relic_idx = self.codex.get_relic_index(relic_id)
+            if relic_idx is not None:
+                obs[relics_offset + relic_idx] = 1.0
+
+        # 5. Append Potions Semantic Profiles
+        potions_offset = relics_offset + self.relic_count
+        potions = _list(player.get("potions"))
+        for slot in range(self.potion_slots):
+            slot_start = potions_offset + slot * self.potion_count
+            if slot < len(potions) and isinstance(potions[slot], Mapping):
+                potion = potions[slot]
+                potion_id = potion.get("id") or potion.get("name")
+                potion_idx = self.codex.get_potion_index(potion_id)
+                if potion_idx is not None:
+                    obs[slot_start + potion_idx] = 1.0
+
+        # 6. Append Monsters Semantic & Power Profiles
+        monsters_offset = potions_offset + self.potion_slots * self.potion_count
+        enemies = _list(normalized.get("enemies"))
+        for slot in range(self.monster_slots):
+            slot_start = monsters_offset + slot * self.monster_slot_size
+            if slot < len(enemies) and isinstance(enemies[slot], Mapping):
+                enemy = enemies[slot]
+                # One-hot identity
+                monster_id = enemy.get("id") or enemy.get("name")
+                monster_idx = self.codex.get_monster_index(monster_id)
+                if monster_idx is not None:
+                    obs[slot_start + monster_idx] = 1.0
+                
+                # Active powers: Strength, Vulnerable, Weak, Ritual
+                powers = _list(enemy.get("powers"))
+                for power in powers:
+                    if not isinstance(power, Mapping):
+                        continue
+                    p_name = str(power.get("name") or "").strip().lower()
+                    p_amount = _number(power.get("amount"), 0)
+                    if p_name == "strength":
+                        obs[slot_start + self.monster_count + 0] = p_amount / 10.0
+                    elif p_name == "vulnerable":
+                        obs[slot_start + self.monster_count + 1] = p_amount / 5.0
+                    elif p_name == "weak":
+                        obs[slot_start + self.monster_count + 2] = p_amount / 5.0
+                    elif p_name == "ritual":
+                        obs[slot_start + self.monster_count + 3] = p_amount / 10.0
+
         np.clip(obs, -1.0, 1.0, out=obs)
         return obs
+
+
 
 
 def normalize_sts2_state(raw_state: dict[str, Any]) -> dict[str, Any]:

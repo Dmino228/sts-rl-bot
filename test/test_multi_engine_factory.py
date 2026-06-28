@@ -24,7 +24,7 @@ def test_engine_factory_creates_separate_engine_strategies():
     assert sts1.game_version == "sts1"
     assert sts2.game_version == "sts2"
     assert sts1.create_state_encoder().shape == (205,)
-    assert sts2.create_state_encoder().shape == (205,)
+    assert sts2.create_state_encoder().shape == (7231,)
 
 
 def test_env_defaults_to_sts1_but_can_construct_sts2_stub():
@@ -41,6 +41,7 @@ def test_env_defaults_to_sts1_but_can_construct_sts2_stub():
     assert sts2_env.game_version == "sts2"
     assert isinstance(sts2_env.process_manager, StS2CliProcessManager)
     assert sts2_env.action_space.n == 100
+    assert sts2_env.observation_space.shape == (7231,)
 
     obs = sts2_env.state_encoder.encode({"observation": [2.0, -2.0, 0.25]})
     assert obs[:3].tolist() == [1.0, -1.0, 0.25]

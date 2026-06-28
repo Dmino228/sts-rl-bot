@@ -171,7 +171,7 @@ def test_sts2_state_adapter_and_encoder_fill_legacy_env_shape():
     assert state["available_commands"] == ["play", "end", "state", "potion"]
     assert state["game_state"]["screen_type"] == "NONE"
     assert state["game_state"]["combat_state"]["monsters"][0]["current_hp"] == 30
-    assert encoded.shape == (205,)
+    assert encoded.shape == (7231,)
     assert np.all(encoded >= -1.0)
     assert np.all(encoded <= 1.0)
 
@@ -197,7 +197,7 @@ def test_env_reset_starts_sts2_run_with_json_start_command():
             "seed": "123",
         }
     ]
-    assert obs.shape == (205,)
+    assert obs.shape == (7231,)
     assert info["action_mask"][CHOICE_BASE] == 1
     env.close()
 
@@ -221,3 +221,71 @@ def test_sts2_process_manager_infers_cwd_from_csproj_global_json(tmp_path):
 
 def test_select_character_uses_sts2_roster_for_multi_character():
     assert select_character(3, {"multi_character": True}, "sts2") == "Necrobinder"
+
+
+def test_sts2_state_encoder_detailed_encoding():
+    state = normalize_sts2_state(_combat_decision())
+    # Set explicit name and powers to test lookup and power logic
+    state["enemies"][0]["name"] = "Aeonglass"
+    state["enemies"][0]["powers"] = [
+        {"name": "Strength", "amount": 3},
+        {"name": "Vulnerable", "amount": 2}
+    ]
+    encoder = StS2StateEncoder()
+    encoded = encoder.encode(state)
+
+    # Check shape
+    assert encoded.shape == encoder.observation_space.shape
+    assert encoded.shape == (7231,)
+
+    # 1. Base 205 legacy features tests:
+    # Gold is 12 (slot 11 = 12/1000 = 0.012)
+    assert abs(encoded[11] - 0.012) < 1e-4
+    # Player HP = 70, Max HP = 80 (slot 12 = 70/80 = 0.875)
+    assert abs(encoded[12] - 0.875) < 1e-4
+    # Player block = 3 (slot 16 = 3/100 = 0.03)
+    assert abs(encoded[16] - 0.03) < 1e-4
+
+    # Hand cards dynamic features (offset 40):
+    # Slot 0 has Strike (cost=1, can_play=True, type=Attack, target=AnyEnemy, damage=6)
+    assert encoded[40] == 1.0
+    assert abs(encoded[41] - 0.2) < 1e-4
+    assert encoded[42] == 1.0
+    assert abs(encoded[43] - 0.1) < 1e-4
+    assert abs(encoded[44] - 0.3) < 1e-4
+    assert abs(encoded[45] - 0.06) < 1e-4
+
+    # 2. Append Hand Cards Semantic Profiles (Offset 205)
+    # Slot 0 card: Strike (ID: "STRIKE" or maps to Strike in codex)
+    strike_idx = encoder.codex.get_card_index("Strike")
+    assert strike_idx is not None
+    assert encoded[205 + strike_idx] == 1.0
+    # Metadata for Strike (Attack, cost 1, not X)
+    assert abs(encoded[205 + encoder.card_count + 0] - 0.2) < 1e-4  # cost / 5.0 = 0.2
+    assert encoded[205 + encoder.card_count + 1] == 0.0  # is_x = 0
+    assert encoded[205 + encoder.card_count + 2] == 1.0  # is_attack = 1.0
+    assert encoded[205 + encoder.card_count + 3] == 0.0  # is_skill = 0.0
+    assert encoded[205 + encoder.card_count + 4] == 0.0  # is_power = 0.0
+
+    # 3. Append Relics (relics_offset = 205 + 10 * 582 = 6025)
+    # _combat_decision has relic "Burning Blood"
+    burning_blood_idx = encoder.codex.get_relic_index("Burning Blood")
+    assert burning_blood_idx is not None
+    assert encoded[6025 + burning_blood_idx] == 1.0
+
+    # 4. Append Potions (potions_offset = 6025 + 296 = 6321)
+    # Potion slot 0: Block Potion
+    block_potion_idx = encoder.codex.get_potion_index("Block Potion")
+    assert block_potion_idx is not None
+    assert encoded[6321 + block_potion_idx] == 1.0
+
+    # 5. Append Monsters (monsters_offset = 6321 + 315 = 6636)
+    # Enemy 0 name: "Aeonglass"
+    monster_idx = encoder.codex.get_monster_index("Aeonglass")
+    assert monster_idx is not None
+    assert encoded[6636 + monster_idx] == 1.0
+    # Active powers: Strength=3 (0.3), Vulnerable=2 (0.4)
+    assert abs(encoded[6636 + encoder.monster_count + 0] - 0.3) < 1e-4
+    assert abs(encoded[6636 + encoder.monster_count + 1] - 0.4) < 1e-4
+    assert encoded[6636 + encoder.monster_count + 2] == 0.0
+    assert encoded[6636 + encoder.monster_count + 3] == 0.0
