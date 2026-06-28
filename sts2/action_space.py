@@ -192,23 +192,29 @@ def _add_shop_actions(commands: dict[int, JsonCommand], state: dict[str, Any]) -
 def _add_card_select_actions(commands: dict[int, JsonCommand], state: dict[str, Any]) -> None:
     cards = _as_list(state.get("cards"))
     min_select = max(0, _int(state.get("min_select"), 1))
+    max_select = max(min_select, _int(state.get("max_select"), min_select))
+    target_select = _bounded_select_count(max_select if max_select > 0 else min_select, cards)
+    if target_select <= 0 and cards:
+        target_select = 1
+
+    available_indices = [
+        slot
+        for slot, card in enumerate(cards[:MAX_CHOICES])
+        if isinstance(card, Mapping)
+    ]
 
     for slot, card in enumerate(cards[:MAX_CHOICES]):
         if not isinstance(card, Mapping):
             continue
-        indices = [_int(card.get("index"), slot)]
-        if min_select > 1:
-            for fallback in cards:
-                if not isinstance(fallback, Mapping):
-                    continue
-                fallback_index = _int(fallback.get("index"), -1)
-                if fallback_index >= 0 and fallback_index not in indices:
-                    indices.append(fallback_index)
-                if len(indices) >= min_select:
-                    break
+        indices = [slot]
+        for fallback_index in available_indices:
+            if fallback_index not in indices:
+                indices.append(fallback_index)
+            if len(indices) >= target_select:
+                break
         commands[CHOICE_BASE + slot] = _action(
             "select_cards",
-            {"indices": ",".join(str(index) for index in indices[:max(1, min_select)])},
+            {"indices": ",".join(str(index) for index in indices[:target_select])},
         )
 
     if min_select == 0:
@@ -276,6 +282,13 @@ def _player(state: dict[str, Any]) -> Mapping[str, Any]:
 
 def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _bounded_select_count(value: int, cards: list[Any]) -> int:
+    selectable_count = sum(1 for card in cards[:MAX_CHOICES] if isinstance(card, Mapping))
+    if selectable_count <= 0:
+        return 0
+    return max(0, min(value, selectable_count))
 
 
 def _int(value: Any, default: int) -> int:

@@ -165,6 +165,53 @@ def test_sts2_card_reward_skip_uses_json_action():
     }
 
 
+def test_sts2_card_select_fills_selection_atomically():
+    state = normalize_sts2_state(
+        {
+            "type": "decision",
+            "decision": "card_select",
+            "cards": [
+                {"index": 0, "name": "Strike"},
+                {"index": 1, "name": "Defend"},
+                {"index": 2, "name": "Bash"},
+            ],
+            "min_select": 1,
+            "max_select": 2,
+            "player": {"hp": 70, "max_hp": 80},
+        }
+    )
+
+    command = StS2ActionMapper().get_action_string(CHOICE_BASE + 2, state)
+
+    assert command == {
+        "cmd": "action",
+        "action": "select_cards",
+        "args": {"indices": "2,0"},
+    }
+
+
+def test_sts2_card_select_optional_keeps_skip_action():
+    state = normalize_sts2_state(
+        {
+            "type": "decision",
+            "decision": "card_select",
+            "cards": [{"index": 0, "name": "Strike"}],
+            "min_select": 0,
+            "max_select": 1,
+            "player": {"hp": 70, "max_hp": 80},
+        }
+    )
+
+    mask = StS2ActionMasker().get_mask(state)
+
+    assert mask[CHOICE_BASE] == 1
+    assert mask[BACK_ACTION] == 1
+    assert StS2ActionMapper().get_action_string(BACK_ACTION, state) == {
+        "cmd": "action",
+        "action": "skip_select",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Compact Encoder Tests
 # ---------------------------------------------------------------------------
@@ -299,12 +346,23 @@ def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
     command = {"cmd": "action", "action": "end_turn"}
     manager._last_command = command
     manager._last_command_at = 100.0
+    manager._last_state = {
+        "type": "decision",
+        "decision": "card_select",
+        "min_select": 1,
+        "max_select": 2,
+        "cards": [{"index": 0}, {"index": 1}],
+        "context": {"act": 1, "floor": 4},
+    }
 
     message = manager._timeout_message("No sts2-cli JSON state received")
 
     assert "within 3.0s" in message
     assert "worker=sts2_worker_7" in message
     assert "last_command={'cmd': 'action', 'action': 'end_turn'}" in message
+    assert "'decision': 'card_select'" in message
+    assert "'max_select': 2" in message
+    assert "'cards_count': 2" in message
 
 
 def test_select_character_uses_sts2_roster_for_multi_character():

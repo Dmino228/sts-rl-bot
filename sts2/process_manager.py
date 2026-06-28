@@ -129,6 +129,7 @@ class StS2CliProcessManager:
             "pid": pid,
             "worker_id": self._worker_id_from_dir(),
             "last_command": self._last_command,
+            "last_state": self._state_summary(self._last_state),
             "last_command_age_s": (
                 None
                 if self._last_command_at is None
@@ -143,8 +144,33 @@ class StS2CliProcessManager:
             f"{prefix} within {self.timeout}s "
             f"(worker={diag['worker_id']} pid={diag['pid']} alive={diag['alive']} "
             f"last_command={diag['last_command']!r} "
+            f"last_state={diag['last_state']!r} "
             f"last_command_age_s={diag['last_command_age_s']})."
         )
+
+    def _state_summary(self, state: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if not isinstance(state, dict):
+            return None
+
+        summary: dict[str, Any] = {
+            "type": state.get("type"),
+            "decision": state.get("decision"),
+        }
+        for key in ("min_select", "max_select", "can_skip"):
+            if key in state:
+                summary[key] = state.get(key)
+
+        for key in ("cards", "choices", "options", "bundles"):
+            value = state.get(key)
+            if isinstance(value, list):
+                summary[f"{key}_count"] = len(value)
+
+        context = state.get("context")
+        if isinstance(context, dict):
+            summary["act"] = context.get("act")
+            summary["floor"] = context.get("floor")
+
+        return summary
 
     def _worker_id_from_dir(self) -> str:
         if not self.worker_dir:
