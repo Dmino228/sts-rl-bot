@@ -3,7 +3,7 @@
 from sts2.action_space import StS2ActionMapper, StS2ActionMasker
 from sts2.engine import StS2Engine
 from sts2.process_manager import StS2CliProcessManager
-from sts2.state_encoder import StS2StateEncoder
+from sts2.state_encoder import StS2StateEncoder, StS2StateEncoderFlat
 
 __all__ = [
     "StS2ActionMapper",
@@ -11,4 +11,5 @@ __all__ = [
     "StS2CliProcessManager",
     "StS2Engine",
     "StS2StateEncoder",
+    "StS2StateEncoderFlat",
 ]

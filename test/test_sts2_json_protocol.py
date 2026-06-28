@@ -2,6 +2,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -17,7 +18,8 @@ from sts2.action_space import (
 )
 from sts2.io import StS2StdIOOverlay
 from sts2.process_manager import StS2CliProcessManager
-from sts2.state_encoder import StS2StateEncoder, normalize_sts2_state
+from sts2.spire_codex import SpireCodex
+from sts2.state_encoder import StS2StateEncoder, StS2StateEncoderFlat, normalize_sts2_state
 
 
 class FakeStS2ProcessManager:
@@ -163,17 +165,86 @@ def test_sts2_card_reward_skip_uses_json_action():
     }
 
 
-def test_sts2_state_adapter_and_encoder_fill_legacy_env_shape():
+# ---------------------------------------------------------------------------
+# Compact Encoder Tests
+# ---------------------------------------------------------------------------
+
+def test_sts2_compact_encoder_shape():
     state = normalize_sts2_state(_combat_decision())
     encoded = StS2StateEncoder().encode(state)
 
-    assert state["in_game"] is True
-    assert state["available_commands"] == ["play", "end", "state", "potion"]
-    assert state["game_state"]["screen_type"] == "NONE"
-    assert state["game_state"]["combat_state"]["monsters"][0]["current_hp"] == 30
-    assert encoded.shape == (7231,)
+    assert encoded.shape == (349,)
     assert np.all(encoded >= -1.0)
     assert np.all(encoded <= 1.0)
+
+
+def test_sts2_compact_encoder_schema_version():
+    assert StS2StateEncoder.SCHEMA_VERSION == "sts2_compact_v1"
+
+
+def test_sts2_compact_encoder_detailed_encoding():
+    state = normalize_sts2_state(_combat_decision())
+    encoder = StS2StateEncoder()
+    encoded = encoder.encode(state)
+
+    assert encoded.shape == (349,)
+
+    # Screen type: NONE → index 0
+    assert encoded[0] == 1.0
+    assert encoded[1] == 0.0
+
+    # Global scalars (ptr=9):
+    # act=1 → 1/4=0.25
+    assert abs(encoded[9] - 0.25) < 1e-4
+    # gold=12 → 12/1000=0.012
+    assert abs(encoded[11] - 0.012) < 1e-4
+    # hp_ratio = 70/80 = 0.875
+    assert abs(encoded[12] - 0.875) < 1e-4
+    # energy = 3 → 3/10 = 0.3
+    assert abs(encoded[15] - 0.3) < 1e-4
+    # block = 3 → 3/100 = 0.03
+    assert abs(encoded[16] - 0.03) < 1e-4
+
+    # Potion summary (ptr=23): 1 potion of 5 slots → 0.2
+    assert abs(encoded[23] - 0.2) < 1e-4
+
+    # Hand card slot 0 (ptr=24, 15 features per slot):
+    # is_present
+    assert encoded[24] == 1.0
+    # cost = 1 → 1/5 = 0.2
+    assert abs(encoded[25] - 0.2) < 1e-4
+    # can_play = True → 1.0
+    assert encoded[26] == 1.0
+    # type flags: Attack → [1,0,0,0,0]
+    assert encoded[27] == 1.0  # is_attack
+    assert encoded[28] == 0.0  # is_skill
+    assert encoded[29] == 0.0  # is_power
+    # target flags: AnyEnemy → off+9 = 1.0
+    assert encoded[33] == 1.0  # anyenemy
+    # damage = 6 → 6/100 = 0.06
+    assert abs(encoded[36] - 0.06) < 1e-4
+
+    # Hand card slot 1 (ptr=24+15=39):
+    assert encoded[39] == 1.0  # is_present
+    assert encoded[41] == 1.0  # can_play
+    assert encoded[42] == 0.0  # NOT attack
+    assert encoded[43] == 1.0  # IS skill
+    # block = 5 → 5/100 = 0.05
+    assert abs(encoded[52] - 0.05) < 1e-4
+
+    # Enemy slot 0 (ptr=174, 14 features per slot):
+    assert encoded[174] == 1.0  # is_present
+    # hp_ratio = 30/30 = 1.0
+    assert abs(encoded[175] - 1.0) < 1e-4
+    # hp_norm = 30/300 = 0.1
+    assert abs(encoded[176] - 0.1) < 1e-4
+    # Intent type one-hot: "Attack" → INTENT_LABELS index 1
+    assert encoded[177 + 1] == 1.0  # attack flag
+
+    # Enemy slot 1 (ptr=174+14=188):
+    assert encoded[188] == 1.0  # is_present
+    # Intent type: "Buff" → INTENT_LABELS index 5
+    assert encoded[191 + 5] == 1.0  # buff flag
 
 
 def test_env_reset_starts_sts2_run_with_json_start_command():
@@ -197,7 +268,7 @@ def test_env_reset_starts_sts2_run_with_json_start_command():
             "seed": "123",
         }
     ]
-    assert obs.shape == (7231,)
+    assert obs.shape == (349,)
     assert info["action_mask"][CHOICE_BASE] == 1
     env.close()
 
@@ -223,69 +294,66 @@ def test_select_character_uses_sts2_roster_for_multi_character():
     assert select_character(3, {"multi_character": True}, "sts2") == "Necrobinder"
 
 
-def test_sts2_state_encoder_detailed_encoding():
-    state = normalize_sts2_state(_combat_decision())
-    # Set explicit name and powers to test lookup and power logic
-    state["enemies"][0]["name"] = "Aeonglass"
-    state["enemies"][0]["powers"] = [
-        {"name": "Strength", "amount": 3},
-        {"name": "Vulnerable", "amount": 2}
-    ]
-    encoder = StS2StateEncoder()
-    encoded = encoder.encode(state)
+# ---------------------------------------------------------------------------
+# SpireCodex Schema & Strict Mode Tests
+# ---------------------------------------------------------------------------
 
-    # Check shape
-    assert encoded.shape == encoder.observation_space.shape
-    assert encoded.shape == (7231,)
+def test_spire_codex_schema_version_constant():
+    assert SpireCodex.SCHEMA_VERSION == "sts2_codex_v1"
 
-    # 1. Base 205 legacy features tests:
-    # Gold is 12 (slot 11 = 12/1000 = 0.012)
-    assert abs(encoded[11] - 0.012) < 1e-4
-    # Player HP = 70, Max HP = 80 (slot 12 = 70/80 = 0.875)
-    assert abs(encoded[12] - 0.875) < 1e-4
-    # Player block = 3 (slot 16 = 3/100 = 0.03)
-    assert abs(encoded[16] - 0.03) < 1e-4
 
-    # Hand cards dynamic features (offset 40):
-    # Slot 0 has Strike (cost=1, can_play=True, type=Attack, target=AnyEnemy, damage=6)
-    assert encoded[40] == 1.0
-    assert abs(encoded[41] - 0.2) < 1e-4
-    assert encoded[42] == 1.0
-    assert abs(encoded[43] - 0.1) < 1e-4
-    assert abs(encoded[44] - 0.3) < 1e-4
-    assert abs(encoded[45] - 0.06) < 1e-4
+def test_spire_codex_loads_all_entities():
+    codex = SpireCodex()
+    assert len(codex.card_ids) > 0, "card_ids must not be empty"
+    assert len(codex.relic_ids) > 0, "relic_ids must not be empty"
+    assert len(codex.potion_ids) > 0, "potion_ids must not be empty"
+    assert len(codex.monster_ids) > 0, "monster_ids must not be empty"
 
-    # 2. Append Hand Cards Semantic Profiles (Offset 205)
-    # Slot 0 card: Strike (ID: "STRIKE" or maps to Strike in codex)
-    strike_idx = encoder.codex.get_card_index("Strike")
+    for entity, expected in SpireCodex.EXPECTED_COUNTS.items():
+        actual = {
+            "cards": len(codex.card_ids),
+            "relics": len(codex.relic_ids),
+            "potions": len(codex.potion_ids),
+            "monsters": len(codex.monster_ids),
+        }[entity]
+        assert actual == expected, f"{entity}: expected {expected}, got {actual}"
+
+
+def test_spire_codex_strict_fails_without_path(tmp_path):
+    bogus_path = str(tmp_path / "nonexistent" / "path")
+    with pytest.raises(RuntimeError, match="STRICT"):
+        SpireCodex(localization_path=bogus_path, strict=True)
+
+
+def test_spire_codex_expanded_card_metadata():
+    codex = SpireCodex()
+    strike_idx = codex.get_card_index("Strike")
     assert strike_idx is not None
-    assert encoded[205 + strike_idx] == 1.0
-    # Metadata for Strike (Attack, cost 1, not X)
-    assert abs(encoded[205 + encoder.card_count + 0] - 0.2) < 1e-4  # cost / 5.0 = 0.2
-    assert encoded[205 + encoder.card_count + 1] == 0.0  # is_x = 0
-    assert encoded[205 + encoder.card_count + 2] == 1.0  # is_attack = 1.0
-    assert encoded[205 + encoder.card_count + 3] == 0.0  # is_skill = 0.0
-    assert encoded[205 + encoder.card_count + 4] == 0.0  # is_power = 0.0
+    meta = codex.get_card_static_metadata(strike_idx)
+    assert meta["is_attack"] == 1.0
+    assert meta["is_skill"] == 0.0
+    assert meta["cost"] == 1.0
+    assert meta["rarity"] > 0.0
+    assert meta["base_damage"] > 0.0
+    assert "target" in meta
+    assert "base_block" in meta
+    assert "base_magic" in meta
 
-    # 3. Append Relics (relics_offset = 205 + 10 * 582 = 6025)
-    # _combat_decision has relic "Burning Blood"
-    burning_blood_idx = encoder.codex.get_relic_index("Burning Blood")
-    assert burning_blood_idx is not None
-    assert encoded[6025 + burning_blood_idx] == 1.0
 
-    # 4. Append Potions (potions_offset = 6025 + 296 = 6321)
-    # Potion slot 0: Block Potion
-    block_potion_idx = encoder.codex.get_potion_index("Block Potion")
-    assert block_potion_idx is not None
-    assert encoded[6321 + block_potion_idx] == 1.0
+# ---------------------------------------------------------------------------
+# Flat Encoder Tests (experimental, 7231D)
+# ---------------------------------------------------------------------------
 
-    # 5. Append Monsters (monsters_offset = 6321 + 315 = 6636)
-    # Enemy 0 name: "Aeonglass"
-    monster_idx = encoder.codex.get_monster_index("Aeonglass")
-    assert monster_idx is not None
-    assert encoded[6636 + monster_idx] == 1.0
-    # Active powers: Strength=3 (0.3), Vulnerable=2 (0.4)
-    assert abs(encoded[6636 + encoder.monster_count + 0] - 0.3) < 1e-4
-    assert abs(encoded[6636 + encoder.monster_count + 1] - 0.4) < 1e-4
-    assert encoded[6636 + encoder.monster_count + 2] == 0.0
-    assert encoded[6636 + encoder.monster_count + 3] == 0.0
+def test_sts2_flat_encoder_schema_version():
+    assert StS2StateEncoderFlat.SCHEMA_VERSION == "sts2_codex_flat_v1"
+
+
+def test_sts2_flat_encoder_shape():
+    encoder = StS2StateEncoderFlat()
+    assert encoder.shape == (7231,)
+
+    state = normalize_sts2_state(_combat_decision())
+    encoded = encoder.encode(state)
+    assert encoded.shape == (7231,)
+    assert np.all(encoded >= -1.0)
+    assert np.all(encoded <= 1.0)
