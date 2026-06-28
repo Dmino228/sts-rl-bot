@@ -42,6 +42,8 @@ class StS2CliProcessManager:
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_file: Optional[TextIO] = None
         self._last_state: Optional[dict[str, Any]] = None
+        self._last_command: Optional[Any] = None
+        self._last_command_at: Optional[float] = None
 
     def launch_game(self) -> None:
         """Start sts2-cli in headless mode."""
@@ -90,7 +92,7 @@ class StS2CliProcessManager:
                 line = self._stdout_queue.get(timeout=remaining)
             except queue.Empty as exc:
                 raise TimeoutError(
-                    f"sts2-cli did not emit JSON state within {self.timeout}s."
+                    self._timeout_message("sts2-cli did not emit JSON state")
                 ) from exc
 
             if line is None:
@@ -105,18 +107,49 @@ class StS2CliProcessManager:
                 self._last_state = state
                 return state
 
-        raise TimeoutError(f"No sts2-cli JSON state received within {self.timeout}s.")
+        raise TimeoutError(self._timeout_message("No sts2-cli JSON state received"))
 
     def send_command(self, command: Any) -> None:
         """Send a single JSON command to sts2-cli stdin."""
         if self._proc is None or self._proc.stdin is None:
             raise EOFError("sts2-cli process is not running.")
         try:
+            self._last_command = command
+            self._last_command_at = time.time()
             self._proc.stdin.write(self.io.encode_command(command))
             self._proc.stdin.flush()
         except OSError:
             logger.exception("[STS2] Failed to send command: %s", command)
             raise
+
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        """Return lightweight process diagnostics for watchdog logs."""
+        pid = self._proc.pid if self._proc is not None else None
+        return {
+            "pid": pid,
+            "worker_id": self._worker_id_from_dir(),
+            "last_command": self._last_command,
+            "last_command_age_s": (
+                None
+                if self._last_command_at is None
+                else round(time.time() - self._last_command_at, 3)
+            ),
+            "alive": self.is_process_alive(),
+        }
+
+    def _timeout_message(self, prefix: str) -> str:
+        diag = self.diagnostic_snapshot()
+        return (
+            f"{prefix} within {self.timeout}s "
+            f"(worker={diag['worker_id']} pid={diag['pid']} alive={diag['alive']} "
+            f"last_command={diag['last_command']!r} "
+            f"last_command_age_s={diag['last_command_age_s']})."
+        )
+
+    def _worker_id_from_dir(self) -> str:
+        if not self.worker_dir:
+            return "unknown"
+        return os.path.basename(os.path.abspath(self.worker_dir))
 
     def _resolve_process_cwd(self) -> Optional[str]:
         if self.cli_cwd:

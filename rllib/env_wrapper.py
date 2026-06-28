@@ -178,6 +178,7 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         include_action_mask_in_info=True,
         ram_usage=str(_config_value(env_config, "ram_usage", "default")),
         game_version=game_version,
+        process_timeout=float(_config_value(env_config, "process_timeout", 120.0)),
         sts2_cli_path=str(_config_value(env_config, "sts2_cli_path", "sts2-cli")),
         sts2_cli_args=list(_config_value(env_config, "sts2_cli_args", [])),
         sts2_cli_cwd=_optional_str(_config_value(env_config, "sts2_cli_cwd", None)),

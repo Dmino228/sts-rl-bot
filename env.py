@@ -294,7 +294,12 @@ class SlayTheSpireEnv(gym.Env):
                 self.current_state["_env_selections"] = self.current_selections.copy()
 
         except (ConnectionResetError, EOFError, TimeoutError, Exception) as e:
-            print(f"Watchdog: Java process/socket crashed during step: {e}", file=sys.stderr)
+            diagnostics = self._process_diagnostics()
+            print(
+                f"Watchdog: game process/socket crashed during step: {e} "
+                f"diagnostics={diagnostics}",
+                file=sys.stderr,
+            )
             # Only clean up — do NOT restart here. ThreadedVecEnv auto-calls
             # reset() after terminated=True, and reset() already handles
             # launch_game(). Restarting here blocks Ctrl+C shutdown because
@@ -310,6 +315,8 @@ class SlayTheSpireEnv(gym.Env):
             self._mask_state_id = id(self.current_state)
             info = self._make_info(mask, error=str(e))
             info["crashed"] = True
+            if diagnostics:
+                info["process_diagnostics"] = diagnostics
             return (
                 np.zeros(self.state_encoder.shape, dtype=np.float32),
                 0.0,
@@ -396,6 +403,16 @@ class SlayTheSpireEnv(gym.Env):
         if hasattr(self.process_manager, "auto_launch"):
             return self.engine.should_launch_on_reset(self.process_manager)
         return self.worker_dir is not None and getattr(self.process_manager, "_proc", None) is None
+
+    def _process_diagnostics(self) -> Dict[str, Any]:
+        getter = getattr(self.process_manager, "diagnostic_snapshot", None)
+        if not callable(getter):
+            return {}
+        try:
+            snapshot = getter()
+        except Exception:
+            return {}
+        return snapshot if isinstance(snapshot, dict) else {}
 
     def _reset_reward_tracking(self, bootstrap_current: bool = False) -> None:
         """Reset reward deltas, optionally seeding them from current_state."""

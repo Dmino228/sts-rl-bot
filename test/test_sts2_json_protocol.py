@@ -290,6 +290,23 @@ def test_sts2_process_manager_infers_cwd_from_csproj_global_json(tmp_path):
     assert manager._resolve_process_cwd() == str(repo)
 
 
+def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
+    manager = StS2CliProcessManager(
+        timeout=3.0,
+        worker_dir=str(tmp_path / "sts2_worker_7"),
+        cli_path="fake-sts2-cli",
+    )
+    command = {"cmd": "action", "action": "end_turn"}
+    manager._last_command = command
+    manager._last_command_at = 100.0
+
+    message = manager._timeout_message("No sts2-cli JSON state received")
+
+    assert "within 3.0s" in message
+    assert "worker=sts2_worker_7" in message
+    assert "last_command={'cmd': 'action', 'action': 'end_turn'}" in message
+
+
 def test_select_character_uses_sts2_roster_for_multi_character():
     assert select_character(3, {"multi_character": True}, "sts2") == "Necrobinder"
 

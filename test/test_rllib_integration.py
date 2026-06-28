@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 from typing import Any, Optional
 
 import gymnasium as gym
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from process_manager import GameProcessManager
 from rllib.env_wrapper import (
     RLLibActionMaskEnv,
+    make_sts_rllib_env,
     resolve_worker_id,
     select_character,
 )
@@ -105,6 +107,101 @@ def test_train_rllib_module_imports_without_ray_model_dependency():
 
     module = importlib.import_module("rllib.train_rllib")
     assert hasattr(module, "parse_args")
+
+
+def test_train_rllib_uses_game_scoped_default_checkpoint_dir(tmp_path, monkeypatch):
+    from rllib import train_rllib
+
+    monkeypatch.setattr(train_rllib, "MODELS_DIR", str(tmp_path / "models"))
+    args = argparse.Namespace(
+        smoke_test=False,
+        game_version="2",
+        checkpoint_dir="",
+    )
+
+    game_key = train_rllib._checkpoint_game_key(args)
+
+    assert game_key == "sts2"
+    assert train_rllib._resolve_checkpoint_dir(args, game_key) == os.path.join(
+        str(tmp_path / "models"),
+        "rllib",
+        "sts2",
+    )
+
+
+def test_train_rllib_resolves_sts2_timeout_defaults():
+    from rllib import train_rllib
+
+    args = argparse.Namespace(process_timeout_s=None, sample_timeout_s=None)
+
+    args.process_timeout_s = train_rllib._resolve_process_timeout(args, "sts2")
+
+    assert args.process_timeout_s == 30.0
+    assert train_rllib._resolve_sample_timeout(args, "sts2") == 15.0
+
+
+def test_train_rllib_configures_env_runner_fault_tolerance():
+    from rllib import train_rllib
+
+    class FakeConfig:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        def fault_tolerance(self, **kwargs: Any) -> "FakeConfig":
+            self.kwargs = kwargs
+            return self
+
+    args = argparse.Namespace(
+        disable_env_runner_fault_tolerance=False,
+        env_runner_health_timeout_s=7.0,
+        env_runner_restore_timeout_s=21.0,
+        workers=3,
+    )
+    config = FakeConfig()
+
+    assert train_rllib._configure_fault_tolerance(config, args) is config
+    assert config.kwargs["restart_failed_env_runners"] is True
+    assert config.kwargs["ignore_env_runner_failures"] is True
+    assert config.kwargs["restart_failed_sub_environments"] is True
+    assert config.kwargs["env_runner_health_probe_timeout_s"] == 7.0
+    assert config.kwargs["env_runner_restore_timeout_s"] == 21.0
+    assert config.kwargs["num_consecutive_env_runner_failures_tolerance"] == 12
+
+
+def test_result_env_step_delta_prefers_this_iter_metric():
+    from rllib import train_rllib
+
+    assert (
+        train_rllib._result_env_step_delta(
+            {"num_env_steps_sampled_this_iter": 128},
+            previous_steps=1000,
+            current_steps=2000,
+        )
+        == 128
+    )
+
+
+def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
+    captured_kwargs: dict[str, Any] = {}
+
+    def fake_env(**kwargs: Any) -> StubMaskedEnv:
+        captured_kwargs.update(kwargs)
+        return StubMaskedEnv()
+
+    monkeypatch.setattr("rllib.env_wrapper.SlayTheSpireEnv", fake_env)
+
+    env = make_sts_rllib_env(
+        {
+            "workspace_dir": str(tmp_path),
+            "game_version": "2",
+            "character_class": "Ironclad",
+            "process_timeout": 12.5,
+        }
+    )
+
+    assert isinstance(env, RLLibActionMaskEnv)
+    assert captured_kwargs["process_timeout"] == 12.5
+
 
 def test_rllib_wrapper_clips_out_of_bounds_observations():
     """RLLibActionMaskEnv must clip observations that exceed the declared space."""
