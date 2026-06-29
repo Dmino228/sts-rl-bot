@@ -389,7 +389,39 @@ class SlayTheSpireEnv(gym.Env):
             info["raw_state"] = self.current_state
         if self.include_action_mask_in_info:
             info["action_mask"] = mask if mask is not None else self.get_action_mask()
+        info["progress_metrics"] = self._progress_metrics()
         return info
+
+    def _progress_metrics(self) -> Dict[str, Any]:
+        """Expose run-progress counters for training dashboards and logs."""
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            game_state = {}
+
+        context = self.current_state.get("context", {})
+        if not isinstance(context, dict):
+            context = {}
+
+        floor = self._safe_int(game_state.get("floor", context.get("floor", 0)), 0)
+        act = self._safe_int(game_state.get("act", context.get("act", 1)), 1)
+        room_type = str(context.get("room_type") or game_state.get("room_type") or "")
+        screen_type = str(game_state.get("screen_type") or "")
+
+        boss_reached = (
+            act > 1
+            or floor >= 16
+            or room_type.lower() == "boss"
+            or "boss" in screen_type.lower()
+        )
+        boss_killed = act > 1 or self.episode_ended_by_act_completion
+
+        return {
+            "floor": floor,
+            "act": act,
+            "boss_reached": float(boss_reached),
+            "boss_killed": float(boss_killed),
+            "act2": float(act >= 2),
+        }
 
     def _can_soft_reset_at_act_boundary(self, game_state: Dict[str, Any]) -> bool:
         """Return True when reset() should continue from a completed act."""
@@ -466,6 +498,15 @@ class SlayTheSpireEnv(gym.Env):
     # ──────────────────────────────────────────────────────────────
     # V3 REWARD HELPERS
     # ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _safe_int(value: Any, default: int) -> int:
+        try:
+            if value is None:
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _get_total_monster_hp(self, game_state: Dict[str, Any]) -> int:
         """Sum current_hp of all alive monsters."""

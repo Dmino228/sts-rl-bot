@@ -178,6 +178,7 @@ def main() -> None:
     import ray
 
     from rllib.action_mask_model import ACTION_MASK_MODEL, register_action_mask_model
+    from rllib.progress_metrics import ProgressMetricsCallback
 
     logger.info("Starting RLlib training session %s", TIMESTAMP)
     logger.info("Log file: %s", log_file)
@@ -245,6 +246,7 @@ def main() -> None:
     config = _configure_training(config, args)
     config = _configure_resources(config, args)
     config = _configure_fault_tolerance(config, args)
+    config = _configure_callbacks(config, ProgressMetricsCallback)
     config.model["custom_model"] = ACTION_MASK_MODEL
     config.model["fcnet_hiddens"] = [64, 64]
     config.model["vf_share_layers"] = False
@@ -287,10 +289,13 @@ def main() -> None:
             reward = _nested_get(result, ("env_runners", "episode_return_mean"))
             if reward is None:
                 reward = result.get("episode_reward_mean")
+            progress = _progress_log_metrics(result)
             logger.info(
                 (
                     "RLlib iteration=%s env_steps=%d (+%d) iter_s=%.2f "
-                    "steps/sec=%.1f avg_step_ms=%.2f reward_mean=%s"
+                    "steps/sec=%.1f avg_step_ms=%.2f steps=%d reward_mean=%s "
+                    "floor_mean=%s max_floor=%s boss_reached%%=%s "
+                    "boss_killed%%=%s act2%%=%s"
                 ),
                 result.get("training_iteration"),
                 current_steps,
@@ -298,7 +303,13 @@ def main() -> None:
                 iteration_seconds,
                 steps_per_second,
                 ms_per_step,
+                current_steps,
                 reward,
+                progress["floor_mean"],
+                progress["max_floor"],
+                progress["boss_reached_pct"],
+                progress["boss_killed_pct"],
+                progress["act2_pct"],
             )
             if args.slow_iteration_s > 0 and iteration_seconds > args.slow_iteration_s:
                 logger.warning(
@@ -402,6 +413,15 @@ def _configure_fault_tolerance(config: Any, args: argparse.Namespace) -> Any:
         )
     except TypeError:
         return config
+
+
+def _configure_callbacks(config: Any, callback_cls: Any) -> Any:
+    if not hasattr(config, "callbacks"):
+        return config
+    try:
+        return config.callbacks(callbacks_class=callback_cls)
+    except TypeError:
+        return config.callbacks(callback_cls)
 
 
 def _build_algorithm(config: Any) -> Any:
@@ -555,6 +575,46 @@ def _result_env_step_delta(
         if value is not None:
             return max(0, int(value))
     return max(0, current_steps - previous_steps)
+
+
+def _progress_log_metrics(result: dict[str, Any]) -> dict[str, str]:
+    return {
+        "floor_mean": _format_metric(_custom_metric(result, "floor_mean")),
+        "max_floor": _format_metric(
+            _custom_metric(result, "max_floor_max")
+            if _custom_metric(result, "max_floor_max") is not None
+            else _custom_metric(result, "floor_max")
+        ),
+        "boss_reached_pct": _format_metric(_custom_metric(result, "boss_reached_pct_mean")),
+        "boss_killed_pct": _format_metric(_custom_metric(result, "boss_killed_pct_mean")),
+        "act2_pct": _format_metric(_custom_metric(result, "act2_pct_mean")),
+    }
+
+
+def _custom_metric(result: dict[str, Any], key: str) -> Any:
+    custom_metrics = result.get("custom_metrics")
+    if isinstance(custom_metrics, dict) and key in custom_metrics:
+        return custom_metrics[key]
+
+    env_runners = result.get("env_runners")
+    if isinstance(env_runners, dict):
+        custom_metrics = env_runners.get("custom_metrics")
+        if isinstance(custom_metrics, dict) and key in custom_metrics:
+            return custom_metrics[key]
+        if key in env_runners:
+            return env_runners[key]
+
+    return None
+
+
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{numeric:.2f}"
 
 
 def _nested_get(data: dict[str, Any], path: tuple[str, ...]) -> Any:

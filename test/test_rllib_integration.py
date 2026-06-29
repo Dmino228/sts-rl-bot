@@ -56,6 +56,16 @@ class StubMaskedEnv(gym.Env):
         return self._mask.copy()
 
 
+class FakeEpisode:
+    def __init__(self) -> None:
+        self.user_data: dict[str, Any] = {}
+        self.custom_metrics: dict[str, float] = {}
+        self._info: dict[str, Any] | None = None
+
+    def last_info_for(self):
+        return self._info
+
+
 def test_rllib_wrapper_exposes_dict_observation_with_action_mask():
     env = RLLibActionMaskEnv(StubMaskedEnv())
     obs, info = env.reset()
@@ -166,6 +176,80 @@ def test_train_rllib_configures_env_runner_fault_tolerance():
     assert config.kwargs["env_runner_health_probe_timeout_s"] == 7.0
     assert config.kwargs["env_runner_restore_timeout_s"] == 21.0
     assert config.kwargs["num_consecutive_env_runner_failures_tolerance"] == 12
+
+
+def test_train_rllib_configures_progress_callback():
+    from rllib import train_rllib
+    from rllib.progress_metrics import ProgressMetricsCallback
+
+    class FakeConfig:
+        def __init__(self) -> None:
+            self.callback_cls: Any = None
+
+        def callbacks(self, callbacks_class: Any) -> "FakeConfig":
+            self.callback_cls = callbacks_class
+            return self
+
+    config = FakeConfig()
+
+    assert train_rllib._configure_callbacks(config, ProgressMetricsCallback) is config
+    assert config.callback_cls is ProgressMetricsCallback
+
+
+def test_progress_metrics_callback_aggregates_episode_info():
+    from rllib.progress_metrics import ProgressMetricsCallback
+
+    callback = ProgressMetricsCallback()
+    episode = FakeEpisode()
+    callback.on_episode_start(episode=episode)
+    episode._info = {
+        "progress_metrics": {
+            "floor": 16,
+            "boss_reached": 1.0,
+            "boss_killed": 0.0,
+            "act2": 0.0,
+        }
+    }
+    callback.on_episode_step(episode=episode)
+    episode._info = {
+        "progress_metrics": {
+            "floor": 17,
+            "boss_reached": 1.0,
+            "boss_killed": 1.0,
+            "act2": 1.0,
+        }
+    }
+    callback.on_episode_end(episode=episode)
+
+    assert episode.custom_metrics["floor"] == 17.0
+    assert episode.custom_metrics["max_floor"] == 17.0
+    assert episode.custom_metrics["boss_reached_pct"] == 100.0
+    assert episode.custom_metrics["boss_killed_pct"] == 100.0
+    assert episode.custom_metrics["act2_pct"] == 100.0
+
+
+def test_train_rllib_progress_log_metrics_reads_custom_metrics():
+    from rllib import train_rllib
+
+    metrics = train_rllib._progress_log_metrics(
+        {
+            "custom_metrics": {
+                "floor_mean": 8.125,
+                "max_floor_max": 16,
+                "boss_reached_pct_mean": 25,
+                "boss_killed_pct_mean": 12.5,
+                "act2_pct_mean": 12.5,
+            }
+        }
+    )
+
+    assert metrics == {
+        "floor_mean": "8.12",
+        "max_floor": "16.00",
+        "boss_reached_pct": "25.00",
+        "boss_killed_pct": "12.50",
+        "act2_pct": "12.50",
+    }
 
 
 def test_result_env_step_delta_prefers_this_iter_metric():
