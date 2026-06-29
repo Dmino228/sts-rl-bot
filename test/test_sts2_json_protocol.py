@@ -285,6 +285,71 @@ def test_sts2_masks_combat_cards_that_spawn_card_select():
     assert mask[END_TURN_ACTION] == 1
 
 
+@pytest.mark.parametrize(
+    ("card_id", "name", "description", "action_id"),
+    [
+        (
+            "CARD.SCULPTING_STRIKE",
+            "Sculpting Strike",
+            "Deal 9 damage. Add Ethereal to a card in your Hand.",
+            TARGETED_PLAY_BASE,
+        ),
+        (
+            "CARD.HIDDEN_DAGGERS",
+            "Hidden Daggers",
+            "Discard 2 cards. Add 2 Shivs into your Hand.",
+            PLAY_CARD_BASE,
+        ),
+        (
+            "CARD.SURVIVOR",
+            "Survivor",
+            "Gain 8 Block. Discard 1 card.",
+            PLAY_CARD_BASE,
+        ),
+        (
+            "CARD.BODYGUARD",
+            "Bodyguard",
+            "Summon 5.",
+            PLAY_CARD_BASE,
+        ),
+    ],
+)
+def test_sts2_masks_multi_character_cards_that_spawn_card_select(
+    card_id,
+    name,
+    description,
+    action_id,
+):
+    state = normalize_sts2_state(
+        {
+            "type": "decision",
+            "decision": "combat_play",
+            "context": {"act": 1, "floor": 5, "room_type": "Monster"},
+            "energy": 3,
+            "max_energy": 3,
+            "hand": [
+                {
+                    "index": 0,
+                    "id": card_id,
+                    "name": name,
+                    "cost": 1,
+                    "type": "Attack" if action_id == TARGETED_PLAY_BASE else "Skill",
+                    "target_type": "AnyEnemy" if action_id == TARGETED_PLAY_BASE else "Self",
+                    "can_play": True,
+                    "description": description,
+                }
+            ],
+            "enemies": [{"index": 0, "hp": 30, "max_hp": 30}],
+            "player": {"hp": 70, "max_hp": 80},
+        }
+    )
+
+    mask = StS2ActionMasker().get_mask(state)
+
+    assert mask[action_id] == 0
+    assert mask[END_TURN_ACTION] == 1
+
+
 def test_sts2_masks_potions_that_spawn_card_select():
     state = normalize_sts2_state(
         {

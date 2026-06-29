@@ -29,18 +29,25 @@ JsonCommand = dict[str, Any]
 
 CARD_SELECTION_SOURCE_IDS = {
     "ARMAMENTS",
+    "BODYGUARD",
     "BURNING_PACT",
+    "HIDDEN_DAGGERS",
+    "SCULPTING_STRIKE",
     "SEEKER_STRIKE",
+    "SURVIVOR",
     "TRUE_GRIT",
 }
 
 CARD_SELECTION_DESCRIPTION_MARKERS = (
     "choose ",
     "select ",
+    "discard ",
     "upgrade a card",
     "exhaust 1 card",
     "exhaust a card",
     "exhaust any number of cards",
+    "to a card in your",
+    "summon",
     "draw pile",
     "discard pile",
 )
