@@ -97,7 +97,40 @@ class StS2Engine(GameEngine):
         state = process_manager.read_state()
         if state.get("type") == "error":
             raise RuntimeError(f"sts2-cli start_run failed: {state.get('message', state)}")
+
+        curriculum_mode = str(options.get("curriculum_mode", "full_run")).strip().lower()
+        if curriculum_mode == "combat":
+            state = self._enter_curriculum_combat(
+                process_manager=process_manager,
+                options=options,
+            )
+        elif curriculum_mode not in {"", "full_run", "none"}:
+            raise RuntimeError(f"Unsupported STS2 curriculum_mode: {curriculum_mode}")
         return state
 
     def normalize_state(self, raw_state: dict[str, Any]) -> dict[str, Any]:
         return normalize_sts2_state(raw_state)
+
+    def _enter_curriculum_combat(
+        self,
+        *,
+        process_manager: ProcessManagerProtocol,
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        room_type = str(options.get("combat_room_type", "combat") or "combat")
+        encounter = str(
+            options.get("combat_encounter", "SHRINKER_BEETLE_WEAK")
+            or "SHRINKER_BEETLE_WEAK"
+        )
+        command: dict[str, Any] = {
+            "cmd": "enter_room",
+            "type": room_type,
+            "encounter": encounter,
+        }
+        process_manager.send_command(command)
+        state = process_manager.read_state()
+        if state.get("type") == "error":
+            raise RuntimeError(
+                f"sts2-cli combat curriculum failed: {state.get('message', state)}"
+            )
+        return state

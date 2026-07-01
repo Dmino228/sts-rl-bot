@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import json
 from typing import Any, Optional
 
 import gymnasium as gym
@@ -175,6 +176,131 @@ def test_train_rllib_uses_game_scoped_default_checkpoint_dir(tmp_path, monkeypat
         str(tmp_path / "models"),
         "rllib",
         "sts2",
+    )
+
+
+def test_train_rllib_uses_stage_scoped_checkpoint_dir(tmp_path, monkeypatch):
+    from rllib import train_rllib
+
+    monkeypatch.setattr(train_rllib, "MODELS_DIR", str(tmp_path / "models"))
+    args = argparse.Namespace(
+        smoke_test=False,
+        game_version="2",
+        checkpoint_dir="",
+        training_stage="combat_c0_ironclad_starter_act1",
+    )
+
+    game_key = train_rllib._checkpoint_game_key(args)
+
+    assert train_rllib._resolve_checkpoint_dir(args, game_key) == os.path.join(
+        str(tmp_path / "models"),
+        "rllib",
+        "sts2",
+        "combat_c0_ironclad_starter_act1",
+    )
+
+
+def test_checkpoint_metadata_payload_records_curriculum_fields(tmp_path):
+    from rllib import train_rllib
+
+    args = argparse.Namespace(
+        training_stage="combat_c0_ironclad_starter_act1",
+        character="Ironclad",
+        multi_character=False,
+        deck_mode="starter",
+        enemy_pool="act1",
+        run_notes="Starter combat-only baseline",
+        heuristic_mode="hard",
+        heuristic_top_k=1,
+        workers=8,
+        envs_per_worker=1,
+        train_batch_size=1024,
+        minibatch_size=256,
+        num_epochs=4,
+        rollout_fragment_length=128,
+        sts2_cli_path="Sts2Headless.exe",
+        sts2_cli_cwd=r"C:\dev\sts2-cli",
+        sts2_cli_args=["--lang", "en"],
+        sts2_curriculum_mode="combat",
+        sts2_combat_room_type="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        sts2_recycle_every_episodes=250,
+        sts2_recycle_every_steps=0,
+        sts2_recycle_rss_mb=768.0,
+    )
+
+    payload = train_rllib._checkpoint_metadata_payload(
+        args,
+        "sts2",
+        total_steps=2_000_000,
+        checkpoint_path=str(tmp_path / "checkpoint_000001"),
+        source_checkpoint="",
+    )
+
+    assert payload["schema_version"] == train_rllib.CHECKPOINT_METADATA_SCHEMA
+    assert payload["training_stage"] == "combat_c0_ironclad_starter_act1"
+    assert payload["character"] == "Ironclad"
+    assert payload["deck_mode"] == "starter"
+    assert payload["enemy_pool"] == "act1"
+    assert payload["total_steps"] == 2_000_000
+    assert payload["source_checkpoint"] is None
+    assert payload["notes"] == "Starter combat-only baseline"
+    assert payload["heuristic_mode"] == "hard"
+    assert payload["training"]["workers"] == 8
+    assert payload["engine"]["sts2_curriculum_mode"] == "combat"
+    assert payload["engine"]["sts2_combat_encounter"] == "SHRINKER_BEETLE_WEAK"
+    assert payload["engine"]["sts2_recycle_rss_mb"] == 768.0
+
+
+def test_write_checkpoint_metadata_places_json_next_to_checkpoint(tmp_path):
+    from rllib import train_rllib
+
+    checkpoint_dir = tmp_path / "checkpoint_000001"
+    checkpoint_dir.mkdir()
+    args = argparse.Namespace(
+        training_stage="full_a1_ironclad_topkmask",
+        character="Ironclad",
+        multi_character=False,
+        deck_mode="full_run",
+        enemy_pool="act1",
+        run_notes="",
+        heuristic_mode="mask",
+        heuristic_top_k=2,
+        workers=1,
+        envs_per_worker=1,
+        train_batch_size=64,
+        minibatch_size=32,
+        num_epochs=1,
+        rollout_fragment_length=16,
+        sts2_cli_path="",
+        sts2_cli_cwd="",
+        sts2_cli_args=[],
+        sts2_curriculum_mode="full_run",
+        sts2_combat_room_type="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        sts2_recycle_every_episodes=0,
+        sts2_recycle_every_steps=0,
+        sts2_recycle_rss_mb=0.0,
+    )
+
+    metadata_path = train_rllib._write_checkpoint_metadata(
+        str(checkpoint_dir),
+        args,
+        "sts2",
+        total_steps=10,
+        source_checkpoint=str(tmp_path / "source_checkpoint"),
+    )
+
+    with open(metadata_path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    assert metadata_path == os.path.join(
+        str(checkpoint_dir),
+        train_rllib.CHECKPOINT_METADATA_FILENAME,
+    )
+    assert payload["training_stage"] == "full_a1_ironclad_topkmask"
+    assert payload["source_checkpoint"] == os.path.abspath(
+        str(tmp_path / "source_checkpoint")
     )
 
 
@@ -360,6 +486,9 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "sts2_recycle_every_episodes": 123,
             "sts2_recycle_every_steps": 4567,
             "sts2_recycle_rss_mb": 512.5,
+            "sts2_curriculum_mode": "combat",
+            "sts2_combat_room_type": "elite",
+            "sts2_combat_encounter": "SHRINKER_BEETLE_WEAK",
         }
     )
 
@@ -368,6 +497,9 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
     assert captured_kwargs["sts2_recycle_every_episodes"] == 123
     assert captured_kwargs["sts2_recycle_every_steps"] == 4567
     assert captured_kwargs["sts2_recycle_rss_mb"] == 512.5
+    assert captured_kwargs["sts2_curriculum_mode"] == "combat"
+    assert captured_kwargs["sts2_combat_room_type"] == "elite"
+    assert captured_kwargs["sts2_combat_encounter"] == "SHRINKER_BEETLE_WEAK"
 
 
 def test_rllib_wrapper_clips_out_of_bounds_observations():

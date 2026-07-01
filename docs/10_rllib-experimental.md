@@ -48,6 +48,31 @@ Full-run StS2 training from scratch mixes combat tactics, route planning, card r
 
 The heuristic lives in `sts2/heuristics.py` as an action ranker rather than a one-off wrapper. This lets the same ranked decisions later become behavior-cloning labels for Option C.
 
+**G. Curriculum Checkpoint Metadata:**
+Staged StS2 experiments must be reproducible and easy to compare. RLlib training
+therefore supports:
+- `--training-stage` to scope default checkpoint output under `models/rllib/<game>/<stage>/`.
+- `--deck-mode`, `--enemy-pool`, and `--run-notes` to annotate curriculum runs.
+- `checkpoint_metadata.json` next to each saved RLlib checkpoint, recording the
+  stage, character setup, total steps, source checkpoint, heuristic settings,
+  worker/batch settings, and StS2 process recycle settings.
+
+This is the foundation for sequential curriculum runs such as combat C0/C1
+checkpoints followed by full-run fine-tuning.
+
+**H. Minimal StS2 Combat Curriculum Reset:**
+For early combat-only experiments, `--sts2-curriculum-mode combat` keeps the
+official `Sts2Headless` process but changes reset flow to:
+
+```text
+start_run -> enter_room(type="combat", encounter="<id>")
+```
+
+The first exposed selector is `--sts2-combat-encounter`, defaulting to
+`SHRINKER_BEETLE_WEAK`. This is deliberately narrower than the final C0/C1
+curriculum plan; randomized Act 1 pools and controlled deck mutation should be
+added after the single-encounter path is verified.
+
 ## 4. Expected Output
 The agent is responsible for:
 1. Reorganizing the files into `sb3/`, `rllib/`, and root.

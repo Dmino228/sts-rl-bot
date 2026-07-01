@@ -141,6 +141,8 @@ Useful StS2 flags:
 --heuristic-mode hard
 --heuristic-mode mask
 --heuristic-top-k 2
+--sts2-curriculum-mode combat
+--sts2-combat-encounter SHRINKER_BEETLE_WEAK
 --sts2-capture-stderr
 --sts2-recycle-every-episodes 250
 --sts2-recycle-every-steps 0
@@ -155,6 +157,20 @@ learning strategic choices directly.
 
 The recycle limits are checked between runs, during `reset()`. Set any recycle
 limit to `0` to disable it.
+
+For the first combat-only curriculum smoke runs, add:
+
+```powershell
+--training-stage combat_c0_ironclad_starter_act1 `
+--deck-mode starter `
+--enemy-pool act1 `
+--sts2-curriculum-mode combat `
+--sts2-combat-encounter SHRINKER_BEETLE_WEAK
+```
+
+This still uses the official `Sts2Headless` engine. It starts a normal run, then
+uses the headless JSON command `enter_room` to jump into one combat encounter.
+The broader Act 1 enemy pool and deck randomization are planned follow-ups.
 
 ### StS1 RLlib Training
 
@@ -190,11 +206,23 @@ Useful checkpoint flags:
 
 ```powershell
 --checkpoint-freq 1
+--training-stage combat_c0_ironclad_starter_act1
+--deck-mode starter
+--enemy-pool act1
+--run-notes "Starter combat-only baseline"
 --checkpoint-dir C:\path\to\custom\checkpoint_dir
 --resume-from C:\path\to\specific\checkpoint
 --no-auto-resume
 --init-from-sb3 C:\path\to\old_sb3_model.zip
 ```
+
+When `--training-stage` is provided and `--checkpoint-dir` is not, RLlib writes
+to `models/rllib/<game>/<stage>/`. Each saved RLlib checkpoint also receives a
+`checkpoint_metadata.json` file containing the stage, character, deck/enemy
+labels, total steps, source checkpoint, heuristic mode, worker/batch settings,
+and StS2 process recycling settings. This is the intended path for staged STS2
+curriculum runs such as `combat_c0_ironclad_starter_act1` followed by full-run
+fine-tuning.
 
 ## STS2 Benchmark Helper
 

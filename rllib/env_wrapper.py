@@ -244,6 +244,15 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_recycle_rss_mb=float(_config_value(env_config, "sts2_recycle_rss_mb", 0.0)),
         sts2_ascension=int(_config_value(env_config, "ascension", 0)),
         sts2_lang=str(_config_value(env_config, "sts2_lang", "en")),
+        sts2_curriculum_mode=str(
+            _config_value(env_config, "sts2_curriculum_mode", "full_run")
+        ),
+        sts2_combat_room_type=str(
+            _config_value(env_config, "sts2_combat_room_type", "combat")
+        ),
+        sts2_combat_encounter=str(
+            _config_value(env_config, "sts2_combat_encounter", "SHRINKER_BEETLE_WEAK")
+        ),
     )
     heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
     return RLLibActionMaskEnv(

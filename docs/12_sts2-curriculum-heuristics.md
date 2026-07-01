@@ -13,8 +13,67 @@ at once:
 - rest-site choices,
 - long-term credit assignment across the whole act.
 
-The current priority is to test whether removing random non-combat decisions
-lets the policy improve combat and Act 1 progression faster.
+The current priority is to make staged experiments reproducible first, then use
+those stages to test whether combat curriculum and non-combat heuristics improve
+Act 1 progression.
+
+## Checkpoint Metadata
+
+RLlib checkpoints can now be scoped by a curriculum stage:
+
+```text
+--training-stage combat_c0_ironclad_starter_act1
+```
+
+When `--checkpoint-dir` is not set, the stage becomes part of the default path:
+
+```text
+models/rllib/sts2/combat_c0_ironclad_starter_act1/
+```
+
+Every saved RLlib checkpoint gets a `checkpoint_metadata.json` file next to the
+RLlib checkpoint data. The metadata records:
+
+- `training_stage`
+- `character`
+- `multi_character`
+- `deck_mode`
+- `enemy_pool`
+- `total_steps`
+- `source_checkpoint`
+- `heuristic_mode`
+- core RLlib batch/worker settings
+- StS2 process recycle settings
+
+Useful flags:
+
+```powershell
+--training-stage combat_c0_ironclad_starter_act1 `
+--deck-mode starter `
+--enemy-pool act1 `
+--run-notes "Starter combat-only baseline"
+```
+
+## Minimal Combat Curriculum Hook
+
+The first STS2 curriculum profile is intentionally small and disabled by
+default:
+
+```powershell
+--sts2-curriculum-mode combat `
+--sts2-combat-encounter SHRINKER_BEETLE_WEAK
+```
+
+This uses the official `Sts2Headless` JSON protocol:
+
+```text
+start_run -> enter_room(type="combat", encounter="<id>")
+```
+
+It does not yet implement the full Act 1 randomized enemy pool, deck
+randomization, or per-character C1/C2 schedules. It is the first integration
+point for validating combat-only PPO on the real headless engine before adding
+more curriculum breadth.
 
 ## Integration Options
 
@@ -117,11 +176,12 @@ Primary metrics:
 The likely sequence is:
 
 ```text
-full-run baseline
--> hard non-combat heuristic
--> top-k non-combat mask
+memory/process stability
+-> stage-scoped checkpoint metadata
 -> combat-only curriculum checkpoint
 -> full-run fine-tuning from combat checkpoint
+-> hard non-combat heuristic
+-> top-k non-combat mask
 -> behavior cloning from heuristic labels
 -> multi-character expansion
 ```

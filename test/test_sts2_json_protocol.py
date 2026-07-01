@@ -502,6 +502,37 @@ def test_env_reset_starts_sts2_run_with_json_start_command():
     env.close()
 
 
+def test_env_reset_sts2_combat_curriculum_enters_encounter():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+    )
+    fake_manager = FakeStS2ProcessManager([_map_decision(), _combat_decision()])
+    env.process_manager = fake_manager
+
+    obs, info = env.reset(seed=123)
+
+    assert fake_manager.sent == [
+        {
+            "cmd": "start_run",
+            "character": "Ironclad",
+            "ascension": 0,
+            "lang": "en",
+            "seed": "123",
+        },
+        {
+            "cmd": "enter_room",
+            "type": "combat",
+            "encounter": "SHRINKER_BEETLE_WEAK",
+        },
+    ]
+    assert obs.shape == (349,)
+    assert info["action_mask"][TARGETED_PLAY_BASE] == 1
+    env.close()
+
+
 def test_sts2_process_manager_infers_cwd_from_csproj_global_json(tmp_path):
     repo = tmp_path / "sts2-cli"
     project_dir = repo / "src" / "Sts2Headless"

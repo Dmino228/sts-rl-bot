@@ -63,6 +63,9 @@ class SlayTheSpireEnv(gym.Env):
         sts2_recycle_rss_mb: float = 0.0,
         sts2_ascension: int = 0,
         sts2_lang: str = "en",
+        sts2_curriculum_mode: str = "full_run",
+        sts2_combat_room_type: str = "combat",
+        sts2_combat_encounter: str = "SHRINKER_BEETLE_WEAK",
     ) -> None:
         super().__init__()
 
@@ -127,6 +130,9 @@ class SlayTheSpireEnv(gym.Env):
         self.episode_ended_by_act_completion: bool = False
         self.sts2_ascension = int(sts2_ascension)
         self.sts2_lang = sts2_lang
+        self.sts2_curriculum_mode = sts2_curriculum_mode
+        self.sts2_combat_room_type = sts2_combat_room_type
+        self.sts2_combat_encounter = sts2_combat_encounter
 
     def reset(
         self,
@@ -146,11 +152,12 @@ class SlayTheSpireEnv(gym.Env):
                 else:
                     self._maybe_recycle_process_on_reset()
 
+                reset_options = self._engine_reset_options(options)
                 native_reset_state = self.engine.reset_run_state(
                     process_manager=self.process_manager,
                     character_class=self.character_class,
                     seed=seed,
-                    options=options,
+                    options=reset_options,
                     ascension=self.sts2_ascension,
                     lang=self.sts2_lang,
                 )
@@ -257,6 +264,18 @@ class SlayTheSpireEnv(gym.Env):
         obs = self.state_encoder.encode(self.current_state)
         mask = self._refresh_action_mask()
         return obs, self._make_info(mask)
+
+    def _engine_reset_options(
+        self,
+        options: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Merge shared reset options with STS2 curriculum defaults."""
+        reset_options = dict(options or {})
+        if self.game_version == "sts2":
+            reset_options.setdefault("curriculum_mode", self.sts2_curriculum_mode)
+            reset_options.setdefault("combat_room_type", self.sts2_combat_room_type)
+            reset_options.setdefault("combat_encounter", self.sts2_combat_encounter)
+        return reset_options
 
     def step(
         self, action: int

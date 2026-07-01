@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
 import os
 import sys
@@ -29,6 +30,8 @@ from rllib.smoke_env import RLLIB_SMOKE_ENV_NAME, register_smoke_env
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 TIMESTAMP = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+CHECKPOINT_METADATA_FILENAME = "checkpoint_metadata.json"
+CHECKPOINT_METADATA_SCHEMA = "sts_rl_checkpoint_v1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +68,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ascension", type=int, default=0)
     parser.add_argument("--sts2-lang", default="en")
+    parser.add_argument(
+        "--sts2-curriculum-mode",
+        choices=["full_run", "combat"],
+        default="full_run",
+        help="STS2 reset profile. 'combat' starts a run and immediately enters one combat room.",
+    )
+    parser.add_argument(
+        "--sts2-combat-room-type",
+        default="combat",
+        help="Room type used by --sts2-curriculum-mode combat.",
+    )
+    parser.add_argument(
+        "--sts2-combat-encounter",
+        default="SHRINKER_BEETLE_WEAK",
+        help="Encounter id used by --sts2-curriculum-mode combat.",
+    )
     parser.add_argument(
         "--sts2-capture-stderr",
         action="store_true",
@@ -130,8 +149,32 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=(
             "RLlib checkpoint directory. Defaults to models/rllib/sts1 or "
-            "models/rllib/sts2 based on --game-version."
+            "models/rllib/sts2 based on --game-version. When --training-stage "
+            "is set, the default becomes models/rllib/<game>/<stage>."
         ),
+    )
+    parser.add_argument(
+        "--training-stage",
+        default="",
+        help=(
+            "Curriculum/checkpoint stage label, e.g. combat_c0_ironclad_starter_act1. "
+            "Used for metadata and default checkpoint directory scoping."
+        ),
+    )
+    parser.add_argument(
+        "--deck-mode",
+        default="",
+        help="Optional curriculum metadata label, e.g. starter or randomdeck.",
+    )
+    parser.add_argument(
+        "--enemy-pool",
+        default="",
+        help="Optional curriculum metadata label, e.g. act1 or act12.",
+    )
+    parser.add_argument(
+        "--run-notes",
+        default="",
+        help="Short free-form note stored in checkpoint_metadata.json.",
     )
     parser.add_argument("--resume-from", default="", help="Path to an RLlib checkpoint directory.")
     parser.add_argument(
@@ -240,6 +283,12 @@ def main() -> None:
     checkpoint_dir = _resolve_checkpoint_dir(args, game_key)
     logger.info("Checkpoint directory: %s", checkpoint_dir)
     logger.info(
+        "Training metadata: stage=%s deck=%s enemy_pool=%s",
+        _metadata_training_stage(args, game_key),
+        _metadata_value(args, "deck_mode"),
+        _metadata_value(args, "enemy_pool"),
+    )
+    logger.info(
         "Timeouts: process=%.1fs sample=%.1fs heartbeat=%.1fs env_runner_health=%.1fs env_runner_restore=%.1fs",
         args.process_timeout_s,
         args.sample_timeout_s,
@@ -258,6 +307,12 @@ def main() -> None:
             "STS2 strategic heuristic: mode=%s top_k=%d",
             args.heuristic_mode,
             max(1, int(args.heuristic_top_k)),
+        )
+        logger.info(
+            "STS2 curriculum: mode=%s room_type=%s encounter=%s",
+            args.sts2_curriculum_mode,
+            args.sts2_combat_room_type,
+            args.sts2_combat_encounter,
         )
     _warn_if_worker_count_is_aggressive(args, game_key, logger)
 
@@ -293,6 +348,9 @@ def main() -> None:
             "sts2_recycle_every_episodes": args.sts2_recycle_every_episodes,
             "sts2_recycle_every_steps": args.sts2_recycle_every_steps,
             "sts2_recycle_rss_mb": args.sts2_recycle_rss_mb,
+            "sts2_curriculum_mode": args.sts2_curriculum_mode,
+            "sts2_combat_room_type": args.sts2_combat_room_type,
+            "sts2_combat_encounter": args.sts2_combat_encounter,
             "process_timeout": args.process_timeout_s,
             "ascension": args.ascension,
             "sts2_lang": args.sts2_lang,
@@ -316,11 +374,14 @@ def main() -> None:
     algo = _build_algorithm(config)
     heartbeat = _TrainHeartbeat(logger, args.train_heartbeat_s)
     heartbeat.start()
+    current_steps = 0
+    source_checkpoint = ""
     try:
         resume_from = _resolve_resume_path(args, checkpoint_dir)
         if resume_from:
             logger.info("Restoring RLlib checkpoint from %s", resume_from)
             algo.restore(resume_from)
+        source_checkpoint = _source_checkpoint(args, resume_from)
 
         current_steps = _algorithm_env_steps(algo)
         logger.info("Current RLlib env timesteps before training: %d", current_steps)
@@ -385,14 +446,41 @@ def main() -> None:
                 )
             iteration = int(result.get("training_iteration", 0) or 0)
             if args.checkpoint_freq > 0 and iteration % args.checkpoint_freq == 0:
-                checkpoint_path = _save_checkpoint(algo, logger, checkpoint_dir)
+                checkpoint_path = _save_checkpoint_with_metadata(
+                    algo,
+                    logger,
+                    checkpoint_dir,
+                    args,
+                    game_key,
+                    total_steps=current_steps,
+                    source_checkpoint=source_checkpoint,
+                )
                 logger.info("Saved RLlib checkpoint: %s", checkpoint_path)
 
-        checkpoint_path = _save_checkpoint(algo, logger, checkpoint_dir)
+        checkpoint_path = _save_checkpoint_with_metadata(
+            algo,
+            logger,
+            checkpoint_dir,
+            args,
+            game_key,
+            total_steps=current_steps,
+            source_checkpoint=source_checkpoint,
+        )
         logger.info("Training complete. Final RLlib checkpoint: %s", checkpoint_path)
     except KeyboardInterrupt:
         logger.warning("Training interrupted. Saving RLlib checkpoint...")
-        logger.info("Saved RLlib checkpoint: %s", _save_checkpoint(algo, logger, checkpoint_dir))
+        logger.info(
+            "Saved RLlib checkpoint: %s",
+            _save_checkpoint_with_metadata(
+                algo,
+                logger,
+                checkpoint_dir,
+                args,
+                game_key,
+                total_steps=current_steps,
+                source_checkpoint=source_checkpoint,
+            ),
+        )
     finally:
         heartbeat.stop()
         algo.stop()
@@ -509,6 +597,121 @@ def _save_checkpoint(
     return str(result)
 
 
+def _save_checkpoint_with_metadata(
+    algo: Any,
+    logger: logging.Logger,
+    checkpoint_dir: str,
+    args: argparse.Namespace,
+    game_key: str,
+    *,
+    total_steps: int,
+    source_checkpoint: str,
+) -> str:
+    checkpoint_path = _save_checkpoint(algo, logger, checkpoint_dir)
+    _write_checkpoint_metadata(
+        checkpoint_path,
+        args,
+        game_key,
+        total_steps=total_steps,
+        source_checkpoint=source_checkpoint,
+        logger=logger,
+    )
+    return checkpoint_path
+
+
+def _write_checkpoint_metadata(
+    checkpoint_path: str,
+    args: argparse.Namespace,
+    game_key: str,
+    *,
+    total_steps: int,
+    source_checkpoint: str,
+    logger: logging.Logger | None = None,
+) -> str:
+    metadata_dir = _checkpoint_metadata_dir(checkpoint_path)
+    os.makedirs(metadata_dir, exist_ok=True)
+    metadata_path = os.path.join(metadata_dir, CHECKPOINT_METADATA_FILENAME)
+    payload = _checkpoint_metadata_payload(
+        args,
+        game_key,
+        total_steps=total_steps,
+        checkpoint_path=checkpoint_path,
+        source_checkpoint=source_checkpoint,
+    )
+    with open(metadata_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    if logger is not None:
+        logger.info("Saved checkpoint metadata: %s", metadata_path)
+    return metadata_path
+
+
+def _checkpoint_metadata_payload(
+    args: argparse.Namespace,
+    game_key: str,
+    *,
+    total_steps: int,
+    checkpoint_path: str,
+    source_checkpoint: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": CHECKPOINT_METADATA_SCHEMA,
+        "created_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "framework": "RLlib",
+        "algorithm": "PPO",
+        "game_version": game_key,
+        "training_stage": _metadata_training_stage(args, game_key),
+        "character": getattr(args, "character", ""),
+        "multi_character": bool(getattr(args, "multi_character", False)),
+        "deck_mode": _metadata_value(args, "deck_mode"),
+        "enemy_pool": _metadata_value(args, "enemy_pool"),
+        "total_steps": int(total_steps),
+        "source_checkpoint": os.path.abspath(source_checkpoint) if source_checkpoint else None,
+        "checkpoint_path": os.path.abspath(checkpoint_path),
+        "notes": getattr(args, "run_notes", "") or "",
+        "heuristic_mode": getattr(args, "heuristic_mode", "none"),
+        "heuristic_top_k": max(1, int(getattr(args, "heuristic_top_k", 1) or 1)),
+        "training": {
+            "workers": int(getattr(args, "workers", 0) or 0),
+            "envs_per_worker": int(getattr(args, "envs_per_worker", 0) or 0),
+            "train_batch_size": int(getattr(args, "train_batch_size", 0) or 0),
+            "minibatch_size": int(getattr(args, "minibatch_size", 0) or 0),
+            "num_epochs": int(getattr(args, "num_epochs", 0) or 0),
+            "rollout_fragment_length": int(
+                getattr(args, "rollout_fragment_length", 0) or 0
+            ),
+        },
+        "engine": {
+            "sts2_curriculum_mode": getattr(args, "sts2_curriculum_mode", "full_run"),
+            "sts2_combat_room_type": getattr(args, "sts2_combat_room_type", "combat"),
+            "sts2_combat_encounter": getattr(
+                args,
+                "sts2_combat_encounter",
+                "SHRINKER_BEETLE_WEAK",
+            ),
+            "sts2_cli_path": getattr(args, "sts2_cli_path", ""),
+            "sts2_cli_cwd": getattr(args, "sts2_cli_cwd", ""),
+            "sts2_cli_args": list(getattr(args, "sts2_cli_args", []) or []),
+            "sts2_recycle_every_episodes": int(
+                getattr(args, "sts2_recycle_every_episodes", 0) or 0
+            ),
+            "sts2_recycle_every_steps": int(
+                getattr(args, "sts2_recycle_every_steps", 0) or 0
+            ),
+            "sts2_recycle_rss_mb": float(
+                getattr(args, "sts2_recycle_rss_mb", 0.0) or 0.0
+            ),
+        },
+    }
+
+
+def _checkpoint_metadata_dir(checkpoint_path: str) -> str:
+    if os.path.isdir(checkpoint_path):
+        return checkpoint_path
+    parent = os.path.dirname(os.path.abspath(checkpoint_path))
+    return parent or os.getcwd()
+
+
 def _checkpoint_game_key(args: argparse.Namespace) -> str:
     if args.smoke_test:
         return "smoke"
@@ -518,7 +721,39 @@ def _checkpoint_game_key(args: argparse.Namespace) -> str:
 def _resolve_checkpoint_dir(args: argparse.Namespace, game_key: str) -> str:
     if args.checkpoint_dir:
         return os.path.abspath(args.checkpoint_dir)
+    stage = _safe_path_component(getattr(args, "training_stage", ""))
+    if stage:
+        return os.path.join(MODELS_DIR, "rllib", game_key, stage)
     return os.path.join(MODELS_DIR, "rllib", game_key)
+
+
+def _safe_path_component(value: str) -> str:
+    text = str(value or "").strip().replace(" ", "_")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    return "".join(ch if ch in allowed else "_" for ch in text).strip("._")
+
+
+def _metadata_training_stage(args: argparse.Namespace, game_key: str) -> str:
+    stage = str(getattr(args, "training_stage", "") or "").strip()
+    if stage:
+        return stage
+    if game_key == "smoke":
+        return "smoke"
+    return "full_run"
+
+
+def _metadata_value(args: argparse.Namespace, field: str) -> str:
+    value = str(getattr(args, field, "") or "").strip()
+    return value if value else "unspecified"
+
+
+def _source_checkpoint(args: argparse.Namespace, resume_from: str) -> str:
+    if resume_from:
+        return os.path.abspath(resume_from)
+    init_from_sb3 = getattr(args, "init_from_sb3", "")
+    if init_from_sb3:
+        return os.path.abspath(init_from_sb3)
+    return ""
 
 
 def _resolve_resume_path(args: argparse.Namespace, checkpoint_dir: str) -> str:
