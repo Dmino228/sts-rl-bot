@@ -40,6 +40,14 @@ StS2 workers keep one `sts2-cli` / `Sts2Headless` process alive across many runs
 
 Recycling happens only on `reset()`, between runs, so active combat decisions are not interrupted. Watchdog diagnostics include `rss_mb`, process uptime, launch count, and run/step counters.
 
+**F. StS2 Strategic Heuristics / Curriculum Hook:**
+Full-run StS2 training from scratch mixes combat tactics, route planning, card rewards, events, shops, and rest sites. To make Act 1 learning easier to diagnose, RLlib supports an optional STS2 strategic heuristic:
+- `--heuristic-mode none` keeps the normal PPO-controlled action mask.
+- `--heuristic-mode hard` implements the first Option A experiment: PPO controls combat, while non-combat STS2 decisions are narrowed to one deterministic heuristic action through the action mask.
+- `--heuristic-mode mask --heuristic-top-k N` keeps the top N heuristic-ranked non-combat actions. This is the bridge toward Option B, where PPO still learns strategy but exploration is constrained to plausible choices.
+
+The heuristic lives in `sts2/heuristics.py` as an action ranker rather than a one-off wrapper. This lets the same ranked decisions later become behavior-cloning labels for Option C.
+
 ## 4. Expected Output
 The agent is responsible for:
 1. Reorganizing the files into `sb3/`, `rllib/`, and root.

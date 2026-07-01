@@ -138,11 +138,20 @@ Useful StS2 flags:
 --character Necrobinder
 --ascension 0
 --num-gpus 1
+--heuristic-mode hard
+--heuristic-mode mask
+--heuristic-top-k 2
 --sts2-capture-stderr
 --sts2-recycle-every-episodes 250
 --sts2-recycle-every-steps 0
 --sts2-recycle-rss-mb 768
 ```
+
+`--heuristic-mode hard` is the first curriculum experiment: PPO controls combat,
+while a deterministic STS2 heuristic hard-selects non-combat actions through the
+action mask. `--heuristic-mode mask --heuristic-top-k N` keeps the top N
+heuristic-ranked non-combat actions, which is the planned bridge toward PPO
+learning strategic choices directly.
 
 The recycle limits are checked between runs, during `reset()`. Set any recycle
 limit to `0` to disable it.

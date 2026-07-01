@@ -30,11 +30,21 @@ class RLLibActionMaskEnv(gym.Wrapper):
     base env remains a normal Gymnasium env and stays framework agnostic.
     """
 
-    def __init__(self, env: gym.Env) -> None:
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        heuristic_policy: Any | None = None,
+        heuristic_mode: str = "none",
+        heuristic_top_k: int = 1,
+    ) -> None:
         super().__init__(env)
         if not isinstance(env.action_space, spaces.Discrete):
             raise TypeError("RLLibActionMaskEnv requires a Discrete action space.")
 
+        self.heuristic_policy = heuristic_policy
+        self.heuristic_mode = heuristic_mode.strip().lower()
+        self.heuristic_top_k = max(1, int(heuristic_top_k))
         self.observation_space = spaces.Dict(
             {
                 "observations": env.observation_space,
@@ -56,6 +66,7 @@ class RLLibActionMaskEnv(gym.Wrapper):
         options: Optional[dict[str, Any]] = None,
     ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
         observation, info = self.env.reset(seed=seed, options=options)
+        info = dict(info)
         mask = self._extract_mask(info)
         return self._wrap_observation(observation, mask), info
 
@@ -63,15 +74,15 @@ class RLLibActionMaskEnv(gym.Wrapper):
         self,
         action: int,
     ) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
-        mask_before_step = self._current_base_mask()
+        mask_before_step = self._current_action_mask()
         original_action = int(action)
         if not self._is_valid_action(original_action, mask_before_step):
             valid_actions = np.flatnonzero(mask_before_step > 0.0)
             action = int(valid_actions[0]) if len(valid_actions) else 98
 
         observation, reward, terminated, truncated, info = self.env.step(int(action))
+        info = dict(info)
         if original_action != int(action):
-            info = dict(info)
             info["invalid_action_remapped"] = {
                 "requested": original_action,
                 "used": int(action),
@@ -82,7 +93,7 @@ class RLLibActionMaskEnv(gym.Wrapper):
 
     def action_masks(self) -> np.ndarray:
         """Compatibility hook for tooling that still asks the env directly."""
-        return self._current_base_mask().astype(np.float32, copy=True)
+        return self._current_action_mask().astype(np.float32, copy=True)
 
     def close(self) -> None:
         """Ensure the underlying env (and its Java process) is stopped."""
@@ -122,14 +133,55 @@ class RLLibActionMaskEnv(gym.Wrapper):
         if not np.any(mask > 0.0):
             mask = np.zeros(self.action_space.n, dtype=np.float32)
             mask[98 if self.action_space.n > 98 else 0] = 1.0
+        mask = self._apply_heuristic_mask(mask, info=info)
         self._last_action_mask = mask
         return mask
+
+    def _current_action_mask(self) -> np.ndarray:
+        return self._apply_heuristic_mask(self._current_base_mask(), info=None)
 
     def _current_base_mask(self) -> np.ndarray:
         getter = getattr(self.env, "get_action_mask", None)
         if callable(getter):
             return np.asarray(getter(), dtype=np.float32)
         return self._last_action_mask
+
+    def _apply_heuristic_mask(
+        self,
+        mask: np.ndarray,
+        *,
+        info: dict[str, Any] | None,
+    ) -> np.ndarray:
+        if self.heuristic_policy is None or self.heuristic_mode == "none":
+            return mask
+
+        state = getattr(self.env, "current_state", None)
+        if not isinstance(state, Mapping):
+            return mask
+
+        try:
+            heuristic_mask, decision = self.heuristic_policy.mask_for_mode(
+                state,
+                mask,
+                mode=self.heuristic_mode,
+                top_k=self.heuristic_top_k,
+            )
+        except Exception as exc:
+            if info is not None:
+                info["heuristic_error"] = str(exc)
+            return mask
+
+        heuristic_mask = np.asarray(heuristic_mask, dtype=np.float32)
+        if heuristic_mask.shape != (self.action_space.n,) or not np.any(heuristic_mask > 0.0):
+            return mask
+
+        if decision is not None and info is not None:
+            info["heuristic_action"] = {
+                "mode": self.heuristic_mode,
+                "top_k": self.heuristic_top_k,
+                **decision.as_info(),
+            }
+        return heuristic_mask
 
     @staticmethod
     def _is_valid_action(action: int, mask: np.ndarray) -> bool:
@@ -193,7 +245,24 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_ascension=int(_config_value(env_config, "ascension", 0)),
         sts2_lang=str(_config_value(env_config, "sts2_lang", "en")),
     )
-    return RLLibActionMaskEnv(env)
+    heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
+    return RLLibActionMaskEnv(
+        env,
+        heuristic_policy=heuristic_policy,
+        heuristic_mode=str(_config_value(env_config, "heuristic_mode", "none")),
+        heuristic_top_k=int(_config_value(env_config, "heuristic_top_k", 1)),
+    )
+
+
+def _make_heuristic_policy(env_config: Mapping[str, Any], game_version: str) -> Any | None:
+    mode = str(_config_value(env_config, "heuristic_mode", "none")).strip().lower()
+    if mode == "none":
+        return None
+    if normalize_game_version(game_version) != "sts2":
+        return None
+    from sts2.heuristics import StS2StrategicHeuristic
+
+    return StS2StrategicHeuristic()
 
 
 def resolve_worker_id(env_config: Mapping[str, Any]) -> int:

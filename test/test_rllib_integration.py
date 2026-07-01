@@ -56,6 +56,23 @@ class StubMaskedEnv(gym.Env):
         return self._mask.copy()
 
 
+class StubStrategicEnv(StubMaskedEnv):
+    def __init__(self) -> None:
+        super().__init__()
+        self._mask = np.zeros(100, dtype=np.int8)
+        self._mask[68] = 1
+        self._mask[69] = 1
+        self.current_state = {
+            "type": "decision",
+            "decision": "map_select",
+            "choices": [
+                {"col": 0, "row": 1, "type": "Elite"},
+                {"col": 1, "row": 1, "type": "Monster"},
+            ],
+            "player": {"hp": 25, "max_hp": 80},
+        }
+
+
 class FakeEpisode:
     def __init__(self) -> None:
         self.user_data: dict[str, Any] = {}
@@ -86,6 +103,28 @@ def test_rllib_wrapper_remaps_invalid_action_to_valid_fallback():
 
     assert base_env.last_action == 66
     assert info["invalid_action_remapped"] == {"requested": 0, "used": 66}
+
+
+def test_rllib_wrapper_can_hard_control_noncombat_with_heuristic():
+    from sts2.heuristics import StS2StrategicHeuristic
+
+    base_env = StubStrategicEnv()
+    env = RLLibActionMaskEnv(
+        base_env,
+        heuristic_policy=StS2StrategicHeuristic(),
+        heuristic_mode="hard",
+    )
+
+    obs, info = env.reset()
+
+    assert np.flatnonzero(obs["action_mask"]).tolist() == [69]
+    assert info["heuristic_action"]["action_id"] == 69
+
+    _, _, _, _, info = env.step(68)
+
+    assert base_env.last_action == 69
+    assert info["invalid_action_remapped"] == {"requested": 68, "used": 69}
+    assert info["heuristic_action"]["phase"] == "map_select"
 
 
 def test_resolve_worker_id_uses_ray_worker_and_vector_indices():
@@ -174,6 +213,18 @@ def test_train_rllib_allows_disabling_sts2_recycle_defaults():
 
     assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts2") == 0
     assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts2") == 0.0
+
+
+def test_make_heuristic_policy_only_enables_sts2_non_none_modes():
+    from rllib.env_wrapper import _make_heuristic_policy
+    from sts2.heuristics import StS2StrategicHeuristic
+
+    assert _make_heuristic_policy({"heuristic_mode": "none"}, "sts2") is None
+    assert _make_heuristic_policy({"heuristic_mode": "hard"}, "sts1") is None
+    assert isinstance(
+        _make_heuristic_policy({"heuristic_mode": "hard"}, "sts2"),
+        StS2StrategicHeuristic,
+    )
 
 
 def test_train_rllib_configures_env_runner_fault_tolerance():

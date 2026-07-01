@@ -99,6 +99,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Round-robin the default roster for the selected game version.",
     )
+    parser.add_argument(
+        "--heuristic-mode",
+        choices=["none", "hard", "mask"],
+        default="none",
+        help=(
+            "Optional strategic heuristic integration. "
+            "'hard' makes non-combat STS2 masks one-hot; 'mask' keeps top-k heuristic actions."
+        ),
+    )
+    parser.add_argument(
+        "--heuristic-top-k",
+        type=int,
+        default=1,
+        help="Number of heuristic-ranked actions kept when --heuristic-mode=mask.",
+    )
     parser.add_argument("--ram-usage", choices=["low", "default", "safe"], default="default")
     parser.add_argument("--base-port", type=int, default=DEFAULT_RLLIB_BASE_PORT)
     parser.add_argument("--use-xvfb", action="store_true")
@@ -239,6 +254,11 @@ def main() -> None:
             args.sts2_recycle_every_steps,
             args.sts2_recycle_rss_mb,
         )
+        logger.info(
+            "STS2 strategic heuristic: mode=%s top_k=%d",
+            args.heuristic_mode,
+            max(1, int(args.heuristic_top_k)),
+        )
     _warn_if_worker_count_is_aggressive(args, game_key, logger)
 
     ray.init(ignore_reinit_error=True, log_to_driver=True)
@@ -258,6 +278,8 @@ def main() -> None:
             "game_version": args.game_version,
             "character_class": args.character,
             "multi_character": args.multi_character,
+            "heuristic_mode": args.heuristic_mode,
+            "heuristic_top_k": args.heuristic_top_k,
             "ram_usage": args.ram_usage,
             "base_port": args.base_port,
             "use_xvfb": args.use_xvfb,
