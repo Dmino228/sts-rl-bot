@@ -1,61 +1,247 @@
 # Slay the Spire RL Bot
 
-A Reinforcement Learning environment and bot for Slay the Spire, built on top of `gymnasium` and the [CommunicationMod](https://github.com/ForgottenArbiter/CommunicationMod) API.
+Reinforcement Learning environment for training agents on Slay the Spire-style
+games through Gymnasium, Ray RLlib, PyTorch, and action masking.
 
-## Project Architecture (Phase 1 MVP)
+The project started as a CommunicationMod bot for Slay the Spire 1 and has since
+grown into a multi-engine training stack:
 
-This project uses an **inverse communication protocol** governed by CommunicationMod. 
-Unlike typical Python scripts that spawn external binaries, Slay the Spire (via CommunicationMod) acts as the parent process and **spawns this Python script as a subprocess**.
+- **StS1**: Slay the Spire + ModTheSpire + CommunicationMod, launched as isolated
+  JVM workers.
+- **StS2**: Slay the Spire 2 headless pipeline through
+  [`sts2-cli`](https://github.com/wuhao21/sts2-cli), launched as lightweight
+  .NET processes over stdin/stdout JSON.
 
-### The Communication Loop:
-1. Slay the Spire starts up, CommunicationMod reads `config.properties`, and spawns `main.py`.
-2. Python writes `"ready"` to its own `sys.stdout` to inform the mod it is alive.
-3. CommunicationMod streams the game's state (as JSON lines) down to Python's `sys.stdin`.
-4. Python reads the state from `sys.stdin`, makes a decision, and writes a plain-text command (e.g., `PLAY 1`, `END`) to `sys.stdout`.
+The current primary training path is **Ray RLlib PPO**. Stable Baselines3 support
+is still present under `sb3/` as the legacy/local-cluster path.
 
-> **⚠️ CRITICAL: Standard Output vs Standard Error**
-> Because `sys.stdout` is strictly reserved for sending plain-text commands back to the game, **all developer logs, debug prints, and error messages MUST go natively to `sys.stderr`**. If Python accidentally prints text to `sys.stdout`, CommunicationMod will attempt to execute it as a game command and likely crash.
+## Current Architecture
 
-## Prerequisites
-- Slay the Spire (Steam Version)
-- Python 3.12+
-- `gymnasium`
-- Steam Workshop Mods:
-  - BaseMod
-  - ModTheSpire
-  - StSLib
-  - CommunicationMod
+The root environment is intentionally game-agnostic. `SlayTheSpireEnv` in
+`env.py` delegates game-specific work to an engine strategy selected by
+`--game-version`.
 
-## Installation and Setup
+```text
+env.py / engine.py
+  shared Gymnasium API, reward shaping, watchdog hooks
 
-1. **Install Python Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+sts1/
+  StS1 state encoder, action masker, CommunicationMod/JVM process manager
 
-2. **Configure CommunicationMod:**
-   You must tell CommunicationMod to launch this python script upon startup. Edit the CommunicationMod configuration file located at:
-   - Windows: `%LOCALAPPDATA%\ModTheSpire\CommunicationMod\config.properties`
-   - Linux: `~/.config/ModTheSpire/CommunicationMod/config.properties`
+sts2/
+  StS2 state encoder, JSON command action mapper, sts2-cli process manager,
+  SpireCodex-derived card/relic/potion/monster metadata
 
-   Add the command to launch the `main.py` entry point (make sure to properly escape special characters depending on your OS, standard Java properties file formatting applies):
-   ```properties
-   command=py "C\:\\dev\\sts rl bot\\main.py"
-   ```
+rllib/
+  Ray environment registration, action-mask model, PPO training script,
+  progress metrics, smoke tests, STS2 benchmark helper
 
-## Usage
+sb3/
+  legacy Stable Baselines3 training scripts and VecEnv implementations
 
-**Do not manually run `py main.py` in your terminal.**
+docs/
+  architecture notes and historical design decisions
+```
 
-To start the agent:
-1. Open Slay the Spire via Steam (Launch with mods).
-2. Ensure CommunicationMod is checked in the ModTheSpire menu.
-3. Click "Play". 
-4. The game will automatically boot up `main.py` in the background, send states, and begin playing through the game using the Random Agent (Phase 1).
-5. You can view the agent's output logic in the ModTheSpire standard developer console (press `~`) or within the game's log files.
+The neural network sees only normalized tensors and action masks. It should not
+need to know whether the backing game is StS1 or StS2.
 
-## Project Structure
-- `docs/` - Architecture and planning rules.
-- `env.py` - Custom `gymnasium.Env` wrapper.
-- `process_manager.py` - Core IO pipe logic parsing `sys.stdin` and communicating via `sys.stdout`.
-- `main.py` - The agent loop that plays the simulation.
+## Features
+
+- Gymnasium-compatible environment with fixed discrete action space.
+- Binary action masks for combat, map, rewards, shops, events, rest sites, and
+  STS2 card-selection decisions.
+- Ray RLlib PPO training with a custom Torch action-mask model.
+- Per-game RLlib checkpoints in `models/rllib/sts1` and `models/rllib/sts2`.
+- Training logs in `logs/`.
+- Progress metrics in RLlib logs:
+  `steps`, `reward_mean`, `floor_mean`, `max_floor`, `boss_reached%`,
+  `boss_killed%`, and `act2%`.
+- Watchdog-style recovery for crashed/stalled game processes.
+- StS2 process recycling by episode count, step count, or RSS threshold to
+  survive long runs while upstream headless memory leaks are being chased.
+
+## Requirements
+
+General:
+
+- Windows is the best-tested target for local training.
+- Python 3.12+.
+- PyTorch, Ray RLlib, Gymnasium, Stable Baselines3, and test dependencies from
+  `requirements.txt`.
+
+For StS1:
+
+- Slay the Spire.
+- ModTheSpire, BaseMod, StSLib, CommunicationMod.
+- A prepared local/portable game directory for worker cloning, usually
+  `SlayTheSpire/`.
+
+For StS2:
+
+- .NET 9 SDK.
+- A local checkout of `sts2-cli`, commonly `C:\dev\sts2-cli`.
+- `sts2-cli` / `Sts2Headless` buildable from:
+  `C:\dev\sts2-cli\src\Sts2Headless\Sts2Headless.csproj`.
+
+## Setup
+
+Create or activate a virtual environment, then install dependencies:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
+```
+
+Verify the Python-side test suite:
+
+```powershell
+python -m pytest test -q -k "not smoke_training"
+```
+
+For StS2, also verify the headless project:
+
+```powershell
+dotnet build C:\dev\sts2-cli\src\Sts2Headless\Sts2Headless.csproj
+```
+
+## RLlib Training
+
+### StS2 Headless Training
+
+This is the fastest and currently most active path.
+
+```powershell
+python rllib\train_rllib.py `
+  --game-version 2 `
+  --sts2-cli-path dotnet `
+  --sts2-cli-cwd C:\dev\sts2-cli `
+  --sts2-cli-arg=run `
+  --sts2-cli-arg=--no-build `
+  --sts2-cli-arg=--project `
+  --sts2-cli-arg=C:\dev\sts2-cli\src\Sts2Headless\Sts2Headless.csproj `
+  --workers 8 `
+  --envs-per-worker 1 `
+  --character Ironclad `
+  --timesteps 1000000
+```
+
+Important PowerShell detail: when a repeated argument value starts with `--`,
+pass it as `--sts2-cli-arg=--no-build`, not `--sts2-cli-arg --no-build`.
+
+Useful StS2 flags:
+
+```powershell
+--multi-character
+--character Ironclad
+--character Necrobinder
+--ascension 0
+--num-gpus 1
+--sts2-capture-stderr
+--sts2-recycle-every-episodes 250
+--sts2-recycle-every-steps 0
+--sts2-recycle-rss-mb 768
+```
+
+The recycle limits are checked between runs, during `reset()`. Set any recycle
+limit to `0` to disable it.
+
+### StS1 RLlib Training
+
+StS1 uses the legacy Java/CommunicationMod process manager behind the same RLlib
+entrypoint:
+
+```powershell
+python rllib\train_rllib.py `
+  --game-version 1 `
+  --base-env-dir C:\dev\sts rl bot\SlayTheSpire `
+  --workers 4 `
+  --envs-per-worker 1 `
+  --character IRONCLAD `
+  --timesteps 1000000
+```
+
+StS1 workers are heavier. Start with fewer workers and scale after confirming
+that worker directories and ports are isolated correctly.
+
+### Checkpoints and Resume
+
+By default, RLlib writes checkpoints per game:
+
+```text
+models/rllib/sts1/
+models/rllib/sts2/
+```
+
+Training auto-resumes from the latest checkpoint in the default directory unless
+`--no-auto-resume` is passed.
+
+Useful checkpoint flags:
+
+```powershell
+--checkpoint-freq 1
+--checkpoint-dir C:\path\to\custom\checkpoint_dir
+--resume-from C:\path\to\specific\checkpoint
+--no-auto-resume
+--init-from-sb3 C:\path\to\old_sb3_model.zip
+```
+
+## STS2 Benchmark Helper
+
+To test the real STS2 Gym pipeline without Ray/PPO overhead:
+
+```powershell
+python rllib\benchmark_sts2_env.py `
+  --envs 4 `
+  --steps 2000 `
+  --sts2-cli-path dotnet `
+  --sts2-cli-cwd C:\dev\sts2-cli
+```
+
+This is useful when separating RLlib overhead from IPC/headless engine overhead.
+
+## Legacy CommunicationMod Mode
+
+The original `main.py` CommunicationMod loop still exists for simple/manual StS1
+integration. In that mode CommunicationMod owns the parent process and launches
+Python from its config file.
+
+CommunicationMod stdout/stderr rule:
+
+- `stdout` is reserved for game commands.
+- developer logs must go to `stderr`.
+
+Example config entry:
+
+```properties
+command=py "C\:\\dev\\sts rl bot\\main.py"
+```
+
+Most current training work should use `rllib/train_rllib.py` instead.
+
+## Development Workflow
+
+Before changing architecture or engine behavior, read the relevant files under
+`docs/`. They are the source of truth for current design intent.
+
+Common checks:
+
+```powershell
+python -m py_compile env.py engine.py sts1\engine.py sts2\engine.py sts2\process_manager.py rllib\train_rllib.py
+python -m pytest test\test_sts2_json_protocol.py -q
+python -m pytest test\test_rllib_integration.py -q
+python -m pytest test -q -k "not smoke_training"
+```
+
+## Notes
+
+- The shared action space is size `100`; STS2 currently uses the same external
+  action count while mapping commands to JSON.
+- Current STS1 observations are `205` floats; current STS2 observations are
+  `349` floats.
+- Reward shaping is V3.2-style: floor progress, combat victory, relics,
+  upgrades/removals, signed HP deltas, anti-stall pressure, death penalty, and
+  act-completion reward.
+- On an 8C/16T CPU, 8 STS2 workers has been a safer baseline than immediately
+  jumping to 16 workers. Use logs and `steps/sec` to tune from there.
