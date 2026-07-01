@@ -150,6 +150,32 @@ def test_train_rllib_resolves_sts2_timeout_defaults():
     assert train_rllib._resolve_sample_timeout(args, "sts2") == 15.0
 
 
+def test_train_rllib_resolves_sts2_recycle_defaults():
+    from rllib import train_rllib
+
+    args = argparse.Namespace(
+        sts2_recycle_every_episodes=None,
+        sts2_recycle_rss_mb=None,
+    )
+
+    assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts2") == 250
+    assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts2") == 768.0
+    assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts1") == 0
+    assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts1") == 0.0
+
+
+def test_train_rllib_allows_disabling_sts2_recycle_defaults():
+    from rllib import train_rllib
+
+    args = argparse.Namespace(
+        sts2_recycle_every_episodes=0,
+        sts2_recycle_rss_mb=0.0,
+    )
+
+    assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts2") == 0
+    assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts2") == 0.0
+
+
 def test_train_rllib_configures_env_runner_fault_tolerance():
     from rllib import train_rllib
 
@@ -280,11 +306,17 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "game_version": "2",
             "character_class": "Ironclad",
             "process_timeout": 12.5,
+            "sts2_recycle_every_episodes": 123,
+            "sts2_recycle_every_steps": 4567,
+            "sts2_recycle_rss_mb": 512.5,
         }
     )
 
     assert isinstance(env, RLLibActionMaskEnv)
     assert captured_kwargs["process_timeout"] == 12.5
+    assert captured_kwargs["sts2_recycle_every_episodes"] == 123
+    assert captured_kwargs["sts2_recycle_every_steps"] == 4567
+    assert captured_kwargs["sts2_recycle_rss_mb"] == 512.5
 
 
 def test_rllib_wrapper_clips_out_of_bounds_observations():

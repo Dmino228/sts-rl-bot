@@ -58,6 +58,9 @@ class SlayTheSpireEnv(gym.Env):
         sts2_cli_args: Optional[List[str]] = None,
         sts2_cli_cwd: Optional[str] = None,
         sts2_capture_stderr: bool = False,
+        sts2_recycle_every_episodes: int = 0,
+        sts2_recycle_every_steps: int = 0,
+        sts2_recycle_rss_mb: float = 0.0,
         sts2_ascension: int = 0,
         sts2_lang: str = "en",
     ) -> None:
@@ -87,6 +90,9 @@ class SlayTheSpireEnv(gym.Env):
             sts2_cli_args=sts2_cli_args,
             sts2_cli_cwd=sts2_cli_cwd,
             sts2_capture_stderr=sts2_capture_stderr,
+            sts2_recycle_every_episodes=sts2_recycle_every_episodes,
+            sts2_recycle_every_steps=sts2_recycle_every_steps,
+            sts2_recycle_rss_mb=sts2_recycle_rss_mb,
         )
 
         self.action_mapper = self.engine.create_action_mapper()
@@ -137,6 +143,8 @@ class SlayTheSpireEnv(gym.Env):
                 if self._should_launch_process_on_reset():
                     self.process_manager.launch_game()
                     self.process_manager.signal_ready()
+                else:
+                    self._maybe_recycle_process_on_reset()
 
                 native_reset_state = self.engine.reset_run_state(
                     process_manager=self.process_manager,
@@ -147,6 +155,7 @@ class SlayTheSpireEnv(gym.Env):
                     lang=self.sts2_lang,
                 )
                 if native_reset_state is not None:
+                    self._record_run_started()
                     self.current_state = self.engine.normalize_state(native_reset_state)
                     break
 
@@ -272,6 +281,7 @@ class SlayTheSpireEnv(gym.Env):
             self.current_state = self.engine.normalize_state(
                 self.process_manager.read_state()
             )
+            self._record_env_step()
             
             new_screen_type = "NONE"
             if self.current_state and "game_state" in self.current_state:
@@ -435,6 +445,23 @@ class SlayTheSpireEnv(gym.Env):
         if hasattr(self.process_manager, "auto_launch"):
             return self.engine.should_launch_on_reset(self.process_manager)
         return self.worker_dir is not None and getattr(self.process_manager, "_proc", None) is None
+
+    def _maybe_recycle_process_on_reset(self) -> None:
+        recycler = getattr(self.process_manager, "recycle_if_needed", None)
+        if not callable(recycler):
+            return
+        if recycler():
+            self.current_state = {}
+
+    def _record_run_started(self) -> None:
+        recorder = getattr(self.process_manager, "record_run_started", None)
+        if callable(recorder):
+            recorder()
+
+    def _record_env_step(self) -> None:
+        recorder = getattr(self.process_manager, "record_env_step", None)
+        if callable(recorder):
+            recorder()
 
     def _process_diagnostics(self) -> Dict[str, Any]:
         getter = getattr(self.process_manager, "diagnostic_snapshot", None)

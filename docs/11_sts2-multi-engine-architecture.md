@@ -27,7 +27,7 @@ The most significant architectural difference, hidden behind the `ProcessManager
 * **Engine:** C# / .NET Core (via `sts2-cli`).
 * **Interface:** Fully headless, no GUI (Godot Stubs).
 * **Advantages:** Runs exclusively the pure logic engine. Radically lower RAM and VRAM consumption. Direct communication via native IPC pipes (`stdin`/`stdout`). All game content is unlocked at the source code level.
-* **Management:** Fast startup times (instant environment reset). The lack of graphical overhead allows for an increased limit of concurrent workers on the same hardware.
+* **Management:** Fast startup times (instant environment reset). The lack of graphical overhead allows for an increased limit of concurrent workers on the same hardware. For long RLlib runs, the Python process manager may recycle `sts2-cli` between runs using episode, step, or RSS limits to contain upstream `Sts2Headless` memory growth without interrupting an active decision.
 
 ## 3. Environment Abstraction Goal (Env)
 

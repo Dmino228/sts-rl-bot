@@ -89,6 +89,9 @@ class GameEngine(ABC):
         sts2_cli_args: Optional[list[str]] = None,
         sts2_cli_cwd: Optional[str] = None,
         sts2_capture_stderr: bool = False,
+        sts2_recycle_every_episodes: int = 0,
+        sts2_recycle_every_steps: int = 0,
+        sts2_recycle_rss_mb: float = 0.0,
     ) -> ProcessManagerProtocol:
         """Create the process manager for this game engine."""
 

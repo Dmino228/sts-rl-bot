@@ -41,6 +41,9 @@ class StS2Engine(GameEngine):
         sts2_cli_args: Optional[list[str]] = None,
         sts2_cli_cwd: Optional[str] = None,
         sts2_capture_stderr: bool = False,
+        sts2_recycle_every_episodes: int = 0,
+        sts2_recycle_every_steps: int = 0,
+        sts2_recycle_rss_mb: float = 0.0,
     ) -> ProcessManagerProtocol:
         return StS2CliProcessManager(
             timeout=timeout,
@@ -49,6 +52,9 @@ class StS2Engine(GameEngine):
             cli_args=sts2_cli_args or [],
             cli_cwd=sts2_cli_cwd,
             capture_stderr=sts2_capture_stderr,
+            recycle_every_episodes=sts2_recycle_every_episodes,
+            recycle_every_steps=sts2_recycle_every_steps,
+            recycle_rss_mb=sts2_recycle_rss_mb,
         )
 
     def create_state_encoder(self) -> StateEncoderProtocol:

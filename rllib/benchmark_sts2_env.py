@@ -37,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace-dir", default=os.path.join(PROJECT_ROOT, "rllib_workers"))
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--sts2-capture-stderr", action="store_true")
+    parser.add_argument("--sts2-recycle-every-episodes", type=int, default=250)
+    parser.add_argument("--sts2-recycle-every-steps", type=int, default=0)
+    parser.add_argument("--sts2-recycle-rss-mb", type=float, default=768.0)
     return parser.parse_args()
 
 
@@ -115,6 +118,9 @@ def _make_env(args: argparse.Namespace, cli_args: list[str], index: int) -> Slay
         sts2_cli_args=cli_args,
         sts2_cli_cwd=args.sts2_cli_cwd,
         sts2_capture_stderr=args.sts2_capture_stderr,
+        sts2_recycle_every_episodes=args.sts2_recycle_every_episodes,
+        sts2_recycle_every_steps=args.sts2_recycle_every_steps,
+        sts2_recycle_rss_mb=args.sts2_recycle_rss_mb,
         sts2_ascension=args.ascension,
         sts2_lang=args.sts2_lang,
     )

@@ -56,6 +56,13 @@ class FakeStS2ProcessManager:
         pass
 
 
+class FakeLiveProcess:
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
 def _map_decision():
     return {
         "type": "decision",
@@ -540,6 +547,44 @@ def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
     assert "'cards_count': 2" in message
     assert "'room_type': 'Monster'" in message
     assert "'name': 'Strike'" in message
+
+
+def test_sts2_process_manager_recycle_reason_after_episode_limit(tmp_path):
+    manager = StS2CliProcessManager(
+        worker_dir=str(tmp_path / "sts2_worker_2"),
+        cli_path="fake-sts2-cli",
+        recycle_every_episodes=2,
+    )
+    manager._proc = FakeLiveProcess()
+
+    manager.record_run_started()
+    assert manager._recycle_reason() is None
+
+    manager.record_run_started()
+    reason = manager._recycle_reason()
+
+    assert reason is not None
+    assert "episodes=2" in reason
+    assert "limit=2" in reason
+
+
+def test_sts2_process_manager_recycle_reason_after_rss_limit(tmp_path, monkeypatch):
+    manager = StS2CliProcessManager(
+        worker_dir=str(tmp_path / "sts2_worker_3"),
+        cli_path="fake-sts2-cli",
+        recycle_rss_mb=768.0,
+    )
+    manager._proc = FakeLiveProcess()
+    monkeypatch.setattr(manager, "current_rss_mb", lambda: 812.25)
+
+    reason = manager._recycle_reason()
+    snapshot = manager.diagnostic_snapshot()
+
+    assert reason is not None
+    assert "rss_mb=812.2" in reason
+    assert "limit=768.0" in reason
+    assert snapshot["rss_mb"] == 812.2
+    assert snapshot["recycle_limits"]["rss_mb"] == 768.0
 
 
 def test_select_character_uses_sts2_roster_for_multi_character():

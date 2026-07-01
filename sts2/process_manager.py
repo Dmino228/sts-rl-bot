@@ -29,6 +29,9 @@ class StS2CliProcessManager:
         cli_args: Optional[list[str]] = None,
         cli_cwd: Optional[str] = None,
         capture_stderr: bool = False,
+        recycle_every_episodes: int = 0,
+        recycle_every_steps: int = 0,
+        recycle_rss_mb: float = 0.0,
     ) -> None:
         self.timeout = timeout
         self.worker_dir = worker_dir
@@ -36,6 +39,9 @@ class StS2CliProcessManager:
         self.cli_args = list(cli_args or [])
         self.cli_cwd = cli_cwd
         self.capture_stderr = capture_stderr
+        self.recycle_every_episodes = max(0, int(recycle_every_episodes or 0))
+        self.recycle_every_steps = max(0, int(recycle_every_steps or 0))
+        self.recycle_rss_mb = max(0.0, float(recycle_rss_mb or 0.0))
         self.io = StS2StdIOOverlay()
 
         self._proc: Optional[subprocess.Popen[str]] = None
@@ -46,6 +52,10 @@ class StS2CliProcessManager:
         self._last_state: Optional[dict[str, Any]] = None
         self._last_command: Optional[Any] = None
         self._last_command_at: Optional[float] = None
+        self._runs_since_launch = 0
+        self._steps_since_launch = 0
+        self._launch_count = 0
+        self._launch_started_at: Optional[float] = None
 
     def launch_game(self) -> None:
         """Start sts2-cli in headless mode."""
@@ -75,12 +85,39 @@ class StS2CliProcessManager:
             text=True,
             bufsize=1,
         )
+        self._runs_since_launch = 0
+        self._steps_since_launch = 0
+        self._launch_count += 1
+        self._launch_started_at = time.time()
+        self._last_state = None
+        self._last_command = None
+        self._last_command_at = None
         self._reader_thread = threading.Thread(
             target=self._pump_stdout,
             name="sts2-cli-stdout",
             daemon=True,
         )
         self._reader_thread.start()
+
+    def recycle_if_needed(self) -> bool:
+        """Restart sts2-cli between runs when process-level limits are exceeded."""
+        reason = self._recycle_reason()
+        if not reason:
+            return False
+        logger.warning(
+            "[STS2] Recycling sts2-cli before next run: %s diagnostics=%s",
+            reason,
+            self.diagnostic_snapshot(),
+        )
+        self.launch_game()
+        self.signal_ready()
+        return True
+
+    def record_run_started(self) -> None:
+        self._runs_since_launch += 1
+
+    def record_env_step(self) -> None:
+        self._steps_since_launch += 1
 
     def signal_ready(self) -> None:
         """Wait for the initial sts2-cli ready event."""
@@ -130,9 +167,24 @@ class StS2CliProcessManager:
     def diagnostic_snapshot(self) -> dict[str, Any]:
         """Return lightweight process diagnostics for watchdog logs."""
         pid = self._proc.pid if self._proc is not None else None
+        rss_mb = self.current_rss_mb()
         return {
             "pid": pid,
             "worker_id": self._worker_id_from_dir(),
+            "rss_mb": None if rss_mb is None else round(rss_mb, 1),
+            "runs_since_launch": self._runs_since_launch,
+            "steps_since_launch": self._steps_since_launch,
+            "launch_count": self._launch_count,
+            "uptime_s": (
+                None
+                if self._launch_started_at is None
+                else round(time.time() - self._launch_started_at, 1)
+            ),
+            "recycle_limits": {
+                "episodes": self.recycle_every_episodes,
+                "steps": self.recycle_every_steps,
+                "rss_mb": self.recycle_rss_mb,
+            },
             "last_command": self._last_command,
             "last_state": self._state_summary(self._last_state),
             "stderr_tail": self._stderr_tail(),
@@ -143,6 +195,39 @@ class StS2CliProcessManager:
             ),
             "alive": self.is_process_alive(),
         }
+
+    def current_rss_mb(self) -> Optional[float]:
+        if self._proc is None or not self.is_process_alive():
+            return None
+        return _process_rss_mb(self._proc.pid)
+
+    def _recycle_reason(self) -> Optional[str]:
+        if self._proc is None or not self.is_process_alive():
+            return None
+        if (
+            self.recycle_every_episodes > 0
+            and self._runs_since_launch >= self.recycle_every_episodes
+        ):
+            return (
+                f"episodes={self._runs_since_launch} "
+                f">= limit={self.recycle_every_episodes}"
+            )
+        if (
+            self.recycle_every_steps > 0
+            and self._steps_since_launch >= self.recycle_every_steps
+        ):
+            return (
+                f"steps={self._steps_since_launch} "
+                f">= limit={self.recycle_every_steps}"
+            )
+        rss_mb = self.current_rss_mb()
+        if (
+            self.recycle_rss_mb > 0.0
+            and rss_mb is not None
+            and rss_mb >= self.recycle_rss_mb
+        ):
+            return f"rss_mb={rss_mb:.1f} >= limit={self.recycle_rss_mb:.1f}"
+        return None
 
     def _timeout_message(self, prefix: str) -> str:
         diag = self.diagnostic_snapshot()
@@ -279,3 +364,74 @@ class StS2CliProcessManager:
                 self._stdout_queue.put(line)
         finally:
             self._stdout_queue.put(None)
+
+
+def _process_rss_mb(pid: int) -> Optional[float]:
+    if os.name == "nt":
+        return _windows_process_rss_mb(pid)
+    return _procfs_process_rss_mb(pid)
+
+
+def _windows_process_rss_mb(pid: int) -> Optional[float]:
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    process_query_information = 0x0400
+    process_vm_read = 0x0010
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessMemoryCounters),
+        wintypes.DWORD,
+    ]
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(
+        process_query_information | process_vm_read,
+        False,
+        int(pid),
+    )
+    if not handle:
+        return None
+    try:
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(ProcessMemoryCounters)
+        if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        return float(counters.WorkingSetSize) / (1024.0 * 1024.0)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _procfs_process_rss_mb(pid: int) -> Optional[float]:
+    try:
+        with open(f"/proc/{int(pid)}/statm", "r", encoding="ascii") as statm:
+            parts = statm.read().split()
+        if len(parts) < 2:
+            return None
+        rss_pages = int(parts[1])
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        return float(rss_pages * page_size) / (1024.0 * 1024.0)
+    except (OSError, ValueError, AttributeError):
+        return None

@@ -71,6 +71,30 @@ def parse_args() -> argparse.Namespace:
         help="Write each sts2-cli worker stderr stream to sts2-cli.stderr.log for debugging.",
     )
     parser.add_argument(
+        "--sts2-recycle-every-episodes",
+        type=int,
+        default=None,
+        help=(
+            "Restart each sts2-cli process after this many completed runs. "
+            "Defaults to 250 for StS2. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--sts2-recycle-every-steps",
+        type=int,
+        default=0,
+        help="Restart each sts2-cli process after this many env steps. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--sts2-recycle-rss-mb",
+        type=float,
+        default=None,
+        help=(
+            "Restart each sts2-cli process when its RSS reaches this many MB. "
+            "Defaults to 768 for StS2. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--multi-character",
         action="store_true",
         help="Round-robin the default roster for the selected game version.",
@@ -192,6 +216,12 @@ def main() -> None:
     game_key = _checkpoint_game_key(args)
     args.process_timeout_s = _resolve_process_timeout(args, game_key)
     args.sample_timeout_s = _resolve_sample_timeout(args, game_key)
+    args.sts2_recycle_every_episodes = _resolve_sts2_recycle_every_episodes(
+        args,
+        game_key,
+    )
+    args.sts2_recycle_every_steps = max(0, int(args.sts2_recycle_every_steps or 0))
+    args.sts2_recycle_rss_mb = _resolve_sts2_recycle_rss_mb(args, game_key)
     checkpoint_dir = _resolve_checkpoint_dir(args, game_key)
     logger.info("Checkpoint directory: %s", checkpoint_dir)
     logger.info(
@@ -202,6 +232,13 @@ def main() -> None:
         args.env_runner_health_timeout_s,
         args.env_runner_restore_timeout_s,
     )
+    if game_key == "sts2":
+        logger.info(
+            "STS2 process recycle: episodes=%d steps=%d rss_mb=%.1f",
+            args.sts2_recycle_every_episodes,
+            args.sts2_recycle_every_steps,
+            args.sts2_recycle_rss_mb,
+        )
     _warn_if_worker_count_is_aggressive(args, game_key, logger)
 
     ray.init(ignore_reinit_error=True, log_to_driver=True)
@@ -231,6 +268,9 @@ def main() -> None:
             "sts2_cli_args": args.sts2_cli_args,
             "sts2_cli_cwd": args.sts2_cli_cwd,
             "sts2_capture_stderr": args.sts2_capture_stderr,
+            "sts2_recycle_every_episodes": args.sts2_recycle_every_episodes,
+            "sts2_recycle_every_steps": args.sts2_recycle_every_steps,
+            "sts2_recycle_rss_mb": args.sts2_recycle_rss_mb,
             "process_timeout": args.process_timeout_s,
             "ascension": args.ascension,
             "sts2_lang": args.sts2_lang,
@@ -506,6 +546,27 @@ def _resolve_sample_timeout(args: argparse.Namespace, game_key: str) -> float:
     if game_key == "smoke":
         return 60.0
     return 600.0
+
+
+def _resolve_sts2_recycle_every_episodes(
+    args: argparse.Namespace,
+    game_key: str,
+) -> int:
+    value = getattr(args, "sts2_recycle_every_episodes", None)
+    if value is not None:
+        return max(0, int(value))
+    if game_key == "sts2":
+        return 250
+    return 0
+
+
+def _resolve_sts2_recycle_rss_mb(args: argparse.Namespace, game_key: str) -> float:
+    value = getattr(args, "sts2_recycle_rss_mb", None)
+    if value is not None:
+        return max(0.0, float(value))
+    if game_key == "sts2":
+        return 768.0
+    return 0.0
 
 
 def _warn_if_worker_count_is_aggressive(
