@@ -1,0 +1,437 @@
+"""Process manager for the Slay the Spire 2 headless sts2-cli engine."""
+
+from __future__ import annotations
+
+import logging
+import os
+import queue
+import subprocess
+import threading
+import time
+from collections import deque
+from typing import Any, Optional, TextIO
+
+from sts2.io import StS2StdIOOverlay
+
+logger = logging.getLogger(__name__)
+
+
+class StS2CliProcessManager:
+    """Manage a native sts2-cli process over stdin/stdout JSON lines."""
+
+    auto_launch = True
+
+    def __init__(
+        self,
+        timeout: float = 120.0,
+        worker_dir: Optional[str] = None,
+        cli_path: str = "sts2-cli",
+        cli_args: Optional[list[str]] = None,
+        cli_cwd: Optional[str] = None,
+        capture_stderr: bool = False,
+        recycle_every_episodes: int = 0,
+        recycle_every_steps: int = 0,
+        recycle_rss_mb: float = 0.0,
+    ) -> None:
+        self.timeout = timeout
+        self.worker_dir = worker_dir
+        self.cli_path = cli_path
+        self.cli_args = list(cli_args or [])
+        self.cli_cwd = cli_cwd
+        self.capture_stderr = capture_stderr
+        self.recycle_every_episodes = max(0, int(recycle_every_episodes or 0))
+        self.recycle_every_steps = max(0, int(recycle_every_steps or 0))
+        self.recycle_rss_mb = max(0.0, float(recycle_rss_mb or 0.0))
+        self.io = StS2StdIOOverlay()
+
+        self._proc: Optional[subprocess.Popen[str]] = None
+        self._stdout_queue: queue.Queue[str | None] = queue.Queue()
+        self._reader_thread: Optional[threading.Thread] = None
+        self._stderr_file: Optional[TextIO] = None
+        self._stderr_path: Optional[str] = None
+        self._last_state: Optional[dict[str, Any]] = None
+        self._last_command: Optional[Any] = None
+        self._last_command_at: Optional[float] = None
+        self._runs_since_launch = 0
+        self._steps_since_launch = 0
+        self._launch_count = 0
+        self._launch_started_at: Optional[float] = None
+
+    def launch_game(self) -> None:
+        """Start sts2-cli in headless mode."""
+        self.stop()
+        log_dir = os.path.abspath(self.worker_dir) if self.worker_dir else None
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
+        stderr_target: TextIO | int = subprocess.DEVNULL
+        if log_dir and self.capture_stderr:
+            self._stderr_path = os.path.join(log_dir, "sts2-cli.stderr.log")
+            self._stderr_file = open(self._stderr_path, "a", encoding="utf-8", buffering=1)
+            self._stderr_file.write(
+                f"\n--- sts2-cli start pid=pending at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+            )
+            stderr_target = self._stderr_file
+
+        cmd = [self.cli_path, *self.cli_args]
+        cwd = self._resolve_process_cwd()
+        logger.info("[STS2] Starting sts2-cli: %s", " ".join(cmd))
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_target,
+            cwd=cwd,
+            text=True,
+            bufsize=1,
+        )
+        self._runs_since_launch = 0
+        self._steps_since_launch = 0
+        self._launch_count += 1
+        self._launch_started_at = time.time()
+        self._last_state = None
+        self._last_command = None
+        self._last_command_at = None
+        self._reader_thread = threading.Thread(
+            target=self._pump_stdout,
+            name="sts2-cli-stdout",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+    def recycle_if_needed(self) -> bool:
+        """Restart sts2-cli between runs when process-level limits are exceeded."""
+        reason = self._recycle_reason()
+        if not reason:
+            return False
+        logger.warning(
+            "[STS2] Recycling sts2-cli before next run: %s diagnostics=%s",
+            reason,
+            self.diagnostic_snapshot(),
+        )
+        self.launch_game()
+        self.signal_ready()
+        return True
+
+    def record_run_started(self) -> None:
+        self._runs_since_launch += 1
+
+    def record_env_step(self) -> None:
+        self._steps_since_launch += 1
+
+    def signal_ready(self) -> None:
+        """Wait for the initial sts2-cli ready event."""
+        state = self.read_state()
+        if state.get("type") != "ready":
+            raise RuntimeError(f"Expected sts2-cli ready event, got: {state!r}")
+
+    def read_state(self) -> dict[str, Any]:
+        """Read one JSON state emitted by sts2-cli."""
+        start = time.time()
+        while time.time() - start < self.timeout:
+            remaining = max(0.01, self.timeout - (time.time() - start))
+            try:
+                line = self._stdout_queue.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError(
+                    self._timeout_message("sts2-cli did not emit JSON state")
+                ) from exc
+
+            if line is None:
+                raise EOFError("sts2-cli stdout closed.")
+
+            try:
+                state = self.io.decode_state_line(line)
+            except ValueError:
+                logger.warning("[STS2 NON-JSON]: %s", line.strip())
+                continue
+            if state is not None:
+                self._last_state = state
+                return state
+
+        raise TimeoutError(self._timeout_message("No sts2-cli JSON state received"))
+
+    def send_command(self, command: Any) -> None:
+        """Send a single JSON command to sts2-cli stdin."""
+        if self._proc is None or self._proc.stdin is None:
+            raise EOFError("sts2-cli process is not running.")
+        try:
+            self._last_command = command
+            self._last_command_at = time.time()
+            self._proc.stdin.write(self.io.encode_command(command))
+            self._proc.stdin.flush()
+        except OSError:
+            logger.exception("[STS2] Failed to send command: %s", command)
+            raise
+
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        """Return lightweight process diagnostics for watchdog logs."""
+        pid = self._proc.pid if self._proc is not None else None
+        rss_mb = self.current_rss_mb()
+        return {
+            "pid": pid,
+            "worker_id": self._worker_id_from_dir(),
+            "rss_mb": None if rss_mb is None else round(rss_mb, 1),
+            "runs_since_launch": self._runs_since_launch,
+            "steps_since_launch": self._steps_since_launch,
+            "launch_count": self._launch_count,
+            "uptime_s": (
+                None
+                if self._launch_started_at is None
+                else round(time.time() - self._launch_started_at, 1)
+            ),
+            "recycle_limits": {
+                "episodes": self.recycle_every_episodes,
+                "steps": self.recycle_every_steps,
+                "rss_mb": self.recycle_rss_mb,
+            },
+            "last_command": self._last_command,
+            "last_state": self._state_summary(self._last_state),
+            "stderr_tail": self._stderr_tail(),
+            "last_command_age_s": (
+                None
+                if self._last_command_at is None
+                else round(time.time() - self._last_command_at, 3)
+            ),
+            "alive": self.is_process_alive(),
+        }
+
+    def current_rss_mb(self) -> Optional[float]:
+        if self._proc is None or not self.is_process_alive():
+            return None
+        return _process_rss_mb(self._proc.pid)
+
+    def _recycle_reason(self) -> Optional[str]:
+        if self._proc is None or not self.is_process_alive():
+            return None
+        if (
+            self.recycle_every_episodes > 0
+            and self._runs_since_launch >= self.recycle_every_episodes
+        ):
+            return (
+                f"episodes={self._runs_since_launch} "
+                f">= limit={self.recycle_every_episodes}"
+            )
+        if (
+            self.recycle_every_steps > 0
+            and self._steps_since_launch >= self.recycle_every_steps
+        ):
+            return (
+                f"steps={self._steps_since_launch} "
+                f">= limit={self.recycle_every_steps}"
+            )
+        rss_mb = self.current_rss_mb()
+        if (
+            self.recycle_rss_mb > 0.0
+            and rss_mb is not None
+            and rss_mb >= self.recycle_rss_mb
+        ):
+            return f"rss_mb={rss_mb:.1f} >= limit={self.recycle_rss_mb:.1f}"
+        return None
+
+    def _timeout_message(self, prefix: str) -> str:
+        diag = self.diagnostic_snapshot()
+        return (
+            f"{prefix} within {self.timeout}s "
+            f"(worker={diag['worker_id']} pid={diag['pid']} alive={diag['alive']} "
+            f"last_command={diag['last_command']!r} "
+            f"last_state={diag['last_state']!r} "
+            f"stderr_tail={diag['stderr_tail']!r} "
+            f"last_command_age_s={diag['last_command_age_s']})."
+        )
+
+    def _state_summary(self, state: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if not isinstance(state, dict):
+            return None
+
+        summary: dict[str, Any] = {
+            "type": state.get("type"),
+            "decision": state.get("decision"),
+        }
+        for key in ("min_select", "max_select", "can_skip"):
+            if key in state:
+                summary[key] = state.get(key)
+
+        for key in ("cards", "choices", "options", "bundles"):
+            value = state.get(key)
+            if isinstance(value, list):
+                summary[f"{key}_count"] = len(value)
+                if key == "cards":
+                    summary["cards_preview"] = self._item_preview(value)
+
+        context = state.get("context")
+        if isinstance(context, dict):
+            summary["act"] = context.get("act")
+            summary["floor"] = context.get("floor")
+            summary["room_type"] = context.get("room_type")
+
+        return summary
+
+    def _item_preview(self, items: list[Any], limit: int = 5) -> list[dict[str, Any]]:
+        preview: list[dict[str, Any]] = []
+        for slot, item in enumerate(items[:limit]):
+            if not isinstance(item, dict):
+                continue
+            preview.append(
+                {
+                    "slot": slot,
+                    "index": item.get("index"),
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "type": item.get("type"),
+                }
+            )
+        return preview
+
+    def _stderr_tail(self, max_lines: int = 20) -> list[str]:
+        if not self._stderr_path or not os.path.isfile(self._stderr_path):
+            return []
+        try:
+            if self._stderr_file is not None:
+                self._stderr_file.flush()
+            with open(self._stderr_path, "r", encoding="utf-8", errors="replace") as log_file:
+                return [line.rstrip() for line in deque(log_file, maxlen=max_lines)]
+        except OSError:
+            return []
+
+    def _worker_id_from_dir(self) -> str:
+        if not self.worker_dir:
+            return "unknown"
+        return os.path.basename(os.path.abspath(self.worker_dir))
+
+    def _resolve_process_cwd(self) -> Optional[str]:
+        if self.cli_cwd:
+            cwd = os.path.abspath(self.cli_cwd)
+            os.makedirs(cwd, exist_ok=True)
+            return cwd
+
+        project_path = self._find_project_path()
+        if project_path:
+            cursor = os.path.abspath(os.path.dirname(project_path))
+            while True:
+                if os.path.isfile(os.path.join(cursor, "global.json")):
+                    return cursor
+                parent = os.path.dirname(cursor)
+                if parent == cursor:
+                    break
+                cursor = parent
+
+        if self.worker_dir:
+            return os.path.abspath(self.worker_dir)
+        return None
+
+    def _find_project_path(self) -> Optional[str]:
+        for value in [self.cli_path, *self.cli_args]:
+            candidate = str(value).strip('"')
+            if candidate.lower().endswith(".csproj") and os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def is_process_alive(self) -> bool:
+        if self._proc is None:
+            return False
+        return self._proc.poll() is None
+
+    def stop(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait(timeout=5)
+            finally:
+                self._proc = None
+
+        if self._stderr_file is not None:
+            try:
+                self._stderr_file.close()
+            except Exception:
+                pass
+            self._stderr_file = None
+
+        self._stdout_queue = queue.Queue()
+        self._reader_thread = None
+
+    def terminate(self) -> None:
+        self.stop()
+
+    def _pump_stdout(self) -> None:
+        assert self._proc is not None
+        assert self._proc.stdout is not None
+        try:
+            for line in self._proc.stdout:
+                self._stdout_queue.put(line)
+        finally:
+            self._stdout_queue.put(None)
+
+
+def _process_rss_mb(pid: int) -> Optional[float]:
+    if os.name == "nt":
+        return _windows_process_rss_mb(pid)
+    return _procfs_process_rss_mb(pid)
+
+
+def _windows_process_rss_mb(pid: int) -> Optional[float]:
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    process_query_information = 0x0400
+    process_vm_read = 0x0010
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessMemoryCounters),
+        wintypes.DWORD,
+    ]
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(
+        process_query_information | process_vm_read,
+        False,
+        int(pid),
+    )
+    if not handle:
+        return None
+    try:
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(ProcessMemoryCounters)
+        if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        return float(counters.WorkingSetSize) / (1024.0 * 1024.0)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _procfs_process_rss_mb(pid: int) -> Optional[float]:
+    try:
+        with open(f"/proc/{int(pid)}/statm", "r", encoding="ascii") as statm:
+            parts = statm.read().split()
+        if len(parts) < 2:
+            return None
+        rss_pages = int(parts[1])
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        return float(rss_pages * page_size) / (1024.0 * 1024.0)
+    except (OSError, ValueError, AttributeError):
+        return None

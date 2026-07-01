@@ -32,6 +32,14 @@ We are keeping the local Windows cluster approach. The agent must ensure that Ra
 **D. Fault Tolerance (Watchdog Compatibility):**
 Our `process_manager.py` has a robust auto-restart Watchdog for Java crashes. The agent must ensure that RLlib's worker exception handling respects our soft-resets (returning `terminated=True` and recreating the JVM) without crashing the entire Ray cluster.
 
+**E. StS2 Long-Run Process Recycling:**
+StS2 workers keep one `sts2-cli` / `Sts2Headless` process alive across many runs for throughput. Because the upstream headless process can grow in RSS during long training sessions, RLlib training exposes explicit recycle limits:
+- `--sts2-recycle-every-episodes` defaults to `250` for StS2; use `0` to disable.
+- `--sts2-recycle-every-steps` defaults to `0`; use a positive value for a step-count guard.
+- `--sts2-recycle-rss-mb` defaults to `768`; use `0` to disable.
+
+Recycling happens only on `reset()`, between runs, so active combat decisions are not interrupted. Watchdog diagnostics include `rss_mb`, process uptime, launch count, and run/step counters.
+
 ## 4. Expected Output
 The agent is responsible for:
 1. Reorganizing the files into `sb3/`, `rllib/`, and root.
