@@ -86,6 +86,10 @@ timeout. `--sts2-reward-mode combat_sparse` uses `+1/-1/0` sparse fight rewards,
 while `combat_dense` adds only small combat-local shaping and excludes
 floor/relic/card/act-completion rewards.
 
+For STS2 combat curriculum, expensive manual PPO eval and checkpointing default
+to every 10 train iterations. The random valid-action baseline runs once at
+startup unless `--eval-random-baseline-freq` is explicitly set.
+
 ## 4. Expected Output
 The agent is responsible for:
 1. Reorganizing the files into `sb3/`, `rllib/`, and root.

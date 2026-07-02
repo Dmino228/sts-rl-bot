@@ -4,6 +4,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import sys
+from collections import deque
 from typing import Optional, Tuple, Dict, Any, List
 
 from engine_factory import create_game_engine
@@ -73,6 +74,7 @@ class SlayTheSpireEnv(gym.Env):
         sts2_combat_hp_loss_reward_scale: float = 0.01,
         sts2_combat_action_penalty: float = 0.001,
         sts2_debug_episodes: int = 0,
+        sts2_seed: Optional[int | str] = None,
     ) -> None:
         super().__init__()
 
@@ -151,6 +153,7 @@ class SlayTheSpireEnv(gym.Env):
         self.sts2_combat_hp_loss_reward_scale = float(sts2_combat_hp_loss_reward_scale)
         self.sts2_combat_action_penalty = float(sts2_combat_action_penalty)
         self.sts2_debug_episodes = max(0, int(sts2_debug_episodes))
+        self.sts2_seed = sts2_seed
         self._episode_index = 0
         self._combat_initial_hp: Optional[int] = None
         self._combat_initial_monster_hp: Optional[int] = None
@@ -158,6 +161,8 @@ class SlayTheSpireEnv(gym.Env):
         self._last_done_reason = ""
         self._last_action_id: Optional[int] = None
         self._last_action_command: Any = None
+        self._last_action_summary: Any = None
+        self._recent_combat_trace = deque(maxlen=20)
 
     def reset(
         self,
@@ -287,6 +292,7 @@ class SlayTheSpireEnv(gym.Env):
             self.current_state["_env_selections"] = self.current_selections.copy()
         self._episode_index += 1
         self._reset_combat_episode_tracking()
+        self._recent_combat_trace.clear()
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self._refresh_action_mask()
@@ -302,6 +308,8 @@ class SlayTheSpireEnv(gym.Env):
             reset_options.setdefault("curriculum_mode", self.sts2_curriculum_mode)
             reset_options.setdefault("combat_room_type", self.sts2_combat_room_type)
             reset_options.setdefault("combat_encounter", self._select_combat_encounter())
+            if self.sts2_seed is not None:
+                reset_options.setdefault("seed", self.sts2_seed)
             self._current_combat_encounter = str(reset_options["combat_encounter"])
         return reset_options
 
@@ -321,6 +329,7 @@ class SlayTheSpireEnv(gym.Env):
             action_str = self.action_mapper.get_action_string(action, self.current_state)
             self._last_action_id = int(action)
             self._last_action_command = action_str
+            self._record_combat_trace(action, action_str, self.current_state)
             self.process_manager.send_command(action_str)
             
             old_screen_type = "NONE"
@@ -536,7 +545,159 @@ class SlayTheSpireEnv(gym.Env):
             snapshot = getter()
         except Exception:
             return {}
-        return snapshot if isinstance(snapshot, dict) else {}
+        if not isinstance(snapshot, dict):
+            return {}
+        snapshot["env"] = {
+            "encounter_id": self._current_combat_encounter,
+            "combat_step": self.combat_step_count,
+            "turn": self._state_turn(self.current_state),
+            "last_action_id": self._last_action_id,
+            "last_action": self._last_action_summary,
+            "hand": self._hand_debug(self.current_state),
+            "enemies": self._enemy_debug(self.current_state),
+            "recent_trace": list(self._recent_combat_trace),
+        }
+        return snapshot
+
+    def _record_combat_trace(
+        self,
+        action_id: int,
+        command: Any,
+        state: Dict[str, Any],
+    ) -> None:
+        if not self._is_combat_curriculum():
+            return
+        action_summary = self._describe_action(command, state)
+        self._last_action_summary = action_summary
+        self._recent_combat_trace.append(
+            {
+                "encounter_id": self._current_combat_encounter,
+                "combat_step": self.combat_step_count,
+                "turn": self._state_turn(state),
+                "action_id": int(action_id),
+                "action": action_summary,
+                "hand": self._hand_debug(state),
+                "enemies": self._enemy_debug(state),
+            }
+        )
+
+    def _describe_action(self, command: Any, state: Dict[str, Any]) -> Any:
+        if not isinstance(command, dict):
+            return command
+        summary: Dict[str, Any] = {
+            "cmd": command.get("cmd"),
+            "action": command.get("action"),
+        }
+        args = command.get("args")
+        if isinstance(args, dict):
+            summary["args"] = dict(args)
+            if command.get("action") == "play_card":
+                card_index = self._safe_int(args.get("card_index"), -1)
+                target_index = self._safe_int(args.get("target_index"), -1)
+                card = self._find_card_by_index(self._state_hand(state), card_index)
+                target = self._find_enemy_by_index(self._state_enemies(state), target_index)
+                summary["chosen_card"] = self._card_debug(card, card_index)
+                if target_index >= 0:
+                    summary["target"] = self._enemy_target_debug(target, target_index)
+        return summary
+
+    def _state_turn(self, state: Dict[str, Any]) -> Any:
+        if not isinstance(state, dict):
+            return None
+        for key in ("turn", "round"):
+            if state.get(key) is not None:
+                return state.get(key)
+        game_state = state.get("game_state", {})
+        if isinstance(game_state, dict):
+            combat_state = game_state.get("combat_state", {})
+            if isinstance(combat_state, dict):
+                return combat_state.get("turn", combat_state.get("round"))
+        return None
+
+    def _state_hand(self, state: Dict[str, Any]) -> List[Any]:
+        if isinstance(state.get("hand"), list):
+            return state["hand"]
+        game_state = state.get("game_state", {})
+        if isinstance(game_state, dict):
+            combat_state = game_state.get("combat_state", {})
+            if isinstance(combat_state, dict) and isinstance(combat_state.get("hand"), list):
+                return combat_state["hand"]
+        return []
+
+    def _state_enemies(self, state: Dict[str, Any]) -> List[Any]:
+        if isinstance(state.get("enemies"), list):
+            return state["enemies"]
+        game_state = state.get("game_state", {})
+        if isinstance(game_state, dict):
+            combat_state = game_state.get("combat_state", {})
+            if isinstance(combat_state, dict):
+                monsters = combat_state.get("monsters")
+                if isinstance(monsters, list):
+                    return monsters
+        return []
+
+    def _hand_debug(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        cards: List[Dict[str, Any]] = []
+        for slot, card in enumerate(self._state_hand(state)[:10]):
+            if not isinstance(card, dict):
+                continue
+            cards.append(self._card_debug(card, self._safe_int(card.get("index"), slot), slot))
+        return cards
+
+    def _enemy_debug(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        enemies: List[Dict[str, Any]] = []
+        for slot, enemy in enumerate(self._state_enemies(state)[:5]):
+            if not isinstance(enemy, dict):
+                continue
+            enemies.append(self._enemy_target_debug(enemy, slot))
+        return enemies
+
+    def _card_debug(
+        self,
+        card: Any,
+        fallback_index: int,
+        slot: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not isinstance(card, dict):
+            return {"index": fallback_index, "missing": True}
+        result = {
+            "index": self._safe_int(card.get("index"), fallback_index),
+            "id": card.get("id"),
+            "name": card.get("name"),
+            "cost": card.get("cost"),
+            "can_play": card.get("can_play"),
+            "target_type": card.get("target_type"),
+        }
+        if slot is not None:
+            result["slot"] = slot
+        return result
+
+    def _enemy_target_debug(self, enemy: Any, fallback_index: int) -> Dict[str, Any]:
+        if not isinstance(enemy, dict):
+            return {"index": fallback_index, "missing": True}
+        return {
+            "index": self._safe_int(enemy.get("index"), fallback_index),
+            "name": enemy.get("name"),
+            "hp": enemy.get("hp", enemy.get("current_hp")),
+            "max_hp": enemy.get("max_hp"),
+            "intent": enemy.get("intent"),
+            "intents": enemy.get("intents"),
+        }
+
+    def _find_card_by_index(self, hand: List[Any], card_index: int) -> Any:
+        for slot, card in enumerate(hand):
+            if not isinstance(card, dict):
+                continue
+            if self._safe_int(card.get("index"), slot) == card_index:
+                return card
+        if 0 <= card_index < len(hand):
+            return hand[card_index]
+        return None
+
+    def _find_enemy_by_index(self, enemies: List[Any], target_index: int) -> Any:
+        if 0 <= target_index < len(enemies):
+            return enemies[target_index]
+        return None
 
     def _reset_reward_tracking(self, bootstrap_current: bool = False) -> None:
         """Reset reward deltas, optionally seeding them from current_state."""
@@ -822,6 +983,7 @@ class SlayTheSpireEnv(gym.Env):
     def _reset_combat_episode_tracking(self) -> None:
         self._last_done_reason = ""
         self._last_reward_parts = {}
+        self._last_action_summary = None
         if not self._is_combat_curriculum():
             self._combat_initial_hp = None
             self._combat_initial_monster_hp = None
@@ -970,6 +1132,7 @@ class SlayTheSpireEnv(gym.Env):
             f"block={player.get('block')} energy={player.get('energy')} "
             f"hand={[card.get('name', card.get('id')) for card in hand if isinstance(card, dict)]} "
             f"monsters={self._monster_debug(monsters)} action_id={self._last_action_id} "
+            f"action={self._last_action_summary} "
             f"command={self._last_action_command} reward={reward:.3f} "
             f"parts={self._last_reward_parts} done={self._last_done_reason or 'ongoing'} "
             f"terminated={terminated} truncated={truncated}",

@@ -181,6 +181,7 @@ python rllib\train_rllib.py `
   --sts2-combat-enemy-pool act1_hallway `
   --eval-random-baseline 500 `
   --eval-combat-episodes 500 `
+  --eval-combat-freq 10 `
   --eval-combat-deterministic
 ```
 
@@ -196,7 +197,9 @@ SHRINKER_BEETLE_WEAK` is now only the C0a smoke test. Use `act1_hallway`,
 `act1_hallway_elite`, `act1_elite`, `act1_boss`, or `act1_mixed` for meaningful
 combat benchmarks.
 The random baseline and PPO eval run outside the RLlib training sampler and log
-per-encounter win rates, HP lost, and combat steps on the same pool.
+per-encounter win rates, HP lost, and combat steps on the same pool. In STS2
+combat curriculum, PPO eval and checkpointing default to every 10 train
+iterations so evaluation does not dominate short RLlib iterations.
 
 ### StS1 RLlib Training
 
@@ -231,7 +234,7 @@ Training auto-resumes from the latest checkpoint in the default directory unless
 Useful checkpoint flags:
 
 ```powershell
---checkpoint-freq 1
+--checkpoint-freq 10
 --training-stage combat_c0_ironclad_starter_act1
 --deck-mode starter
 --enemy-pool act1

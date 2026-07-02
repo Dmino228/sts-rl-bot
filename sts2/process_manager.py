@@ -48,6 +48,9 @@ class StS2CliProcessManager:
         self._proc: Optional[subprocess.Popen[str]] = None
         self._stdout_queue: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._stderr_tail_buffer: deque[str] = deque(maxlen=200)
+        self._io_history: deque[dict[str, Any]] = deque(maxlen=20)
         self._stderr_file: Optional[TextIO] = None
         self._stderr_path: Optional[str] = None
         self._last_state: Optional[dict[str, Any]] = None
@@ -65,14 +68,12 @@ class StS2CliProcessManager:
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
 
-        stderr_target: TextIO | int = subprocess.DEVNULL
         if log_dir and self.capture_stderr:
             self._stderr_path = os.path.join(log_dir, "sts2-cli.stderr.log")
             self._stderr_file = open(self._stderr_path, "a", encoding="utf-8", buffering=1)
             self._stderr_file.write(
                 f"\n--- sts2-cli start pid=pending at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
             )
-            stderr_target = self._stderr_file
 
         cmd = [self.cli_path, *self.cli_args]
         cwd = self._resolve_process_cwd()
@@ -90,7 +91,7 @@ class StS2CliProcessManager:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=stderr_target,
+            stderr=subprocess.PIPE,
             cwd=cwd,
             text=True,
             bufsize=1,
@@ -102,12 +103,20 @@ class StS2CliProcessManager:
         self._last_state = None
         self._last_command = None
         self._last_command_at = None
+        self._stderr_tail_buffer.clear()
+        self._io_history.clear()
         self._reader_thread = threading.Thread(
             target=self._pump_stdout,
             name="sts2-cli-stdout",
             daemon=True,
         )
         self._reader_thread.start()
+        self._stderr_thread = threading.Thread(
+            target=self._pump_stderr,
+            name="sts2-cli-stderr",
+            daemon=True,
+        )
+        self._stderr_thread.start()
 
     def recycle_if_needed(self) -> bool:
         """Restart sts2-cli between runs when process-level limits are exceeded."""
@@ -148,7 +157,7 @@ class StS2CliProcessManager:
                 ) from exc
 
             if line is None:
-                raise EOFError("sts2-cli stdout closed.")
+                raise EOFError(self._timeout_message("sts2-cli stdout closed"))
 
             try:
                 state = self.io.decode_state_line(line)
@@ -157,6 +166,12 @@ class StS2CliProcessManager:
                 continue
             if state is not None:
                 self._last_state = state
+                self._io_history.append(
+                    {
+                        "kind": "state",
+                        "value": self._state_summary(state),
+                    }
+                )
                 return state
 
         raise TimeoutError(self._timeout_message("No sts2-cli JSON state received"))
@@ -168,6 +183,12 @@ class StS2CliProcessManager:
         try:
             self._last_command = command
             self._last_command_at = time.time()
+            self._io_history.append(
+                {
+                    "kind": "command",
+                    "value": self._command_summary(command),
+                }
+            )
             self._proc.stdin.write(self.io.encode_command(command))
             self._proc.stdin.flush()
         except OSError:
@@ -198,6 +219,7 @@ class StS2CliProcessManager:
             "last_command": self._last_command,
             "last_state": self._state_summary(self._last_state),
             "stderr_tail": self._stderr_tail(),
+            "io_history": list(self._io_history),
             "last_command_age_s": (
                 None
                 if self._last_command_at is None
@@ -257,6 +279,10 @@ class StS2CliProcessManager:
         summary: dict[str, Any] = {
             "type": state.get("type"),
             "decision": state.get("decision"),
+            "encounter_id": self._encounter_id(state),
+            "round": state.get("round"),
+            "turn": state.get("turn", state.get("round")),
+            "energy": state.get("energy"),
         }
         for key in ("min_select", "max_select", "can_skip"):
             if key in state:
@@ -274,7 +300,26 @@ class StS2CliProcessManager:
             summary["act"] = context.get("act")
             summary["floor"] = context.get("floor")
             summary["room_type"] = context.get("room_type")
+            boss = context.get("boss")
+            if isinstance(boss, dict):
+                summary["boss_id"] = boss.get("id")
 
+        hand = state.get("hand")
+        if isinstance(hand, list):
+            summary["hand"] = self._card_preview(hand, limit=10)
+        enemies = state.get("enemies")
+        if isinstance(enemies, list):
+            summary["enemies"] = self._enemy_preview(enemies, limit=5)
+
+        return summary
+
+    def _command_summary(self, command: Any) -> Any:
+        if not isinstance(command, dict):
+            return command
+        summary = dict(command)
+        args = summary.get("args")
+        if isinstance(args, dict):
+            summary["args"] = dict(args)
         return summary
 
     def _item_preview(self, items: list[Any], limit: int = 5) -> list[dict[str, Any]]:
@@ -293,7 +338,55 @@ class StS2CliProcessManager:
             )
         return preview
 
+    def _card_preview(self, cards: list[Any], limit: int = 10) -> list[dict[str, Any]]:
+        preview: list[dict[str, Any]] = []
+        for slot, card in enumerate(cards[:limit]):
+            if not isinstance(card, dict):
+                continue
+            preview.append(
+                {
+                    "slot": slot,
+                    "index": card.get("index"),
+                    "id": card.get("id"),
+                    "name": card.get("name"),
+                    "cost": card.get("cost"),
+                    "can_play": card.get("can_play"),
+                    "target_type": card.get("target_type"),
+                }
+            )
+        return preview
+
+    def _enemy_preview(self, enemies: list[Any], limit: int = 5) -> list[dict[str, Any]]:
+        preview: list[dict[str, Any]] = []
+        for slot, enemy in enumerate(enemies[:limit]):
+            if not isinstance(enemy, dict):
+                continue
+            preview.append(
+                {
+                    "slot": slot,
+                    "index": enemy.get("index"),
+                    "name": enemy.get("name"),
+                    "hp": enemy.get("hp", enemy.get("current_hp")),
+                    "max_hp": enemy.get("max_hp"),
+                    "intents": enemy.get("intents"),
+                }
+            )
+        return preview
+
+    def _encounter_id(self, state: dict[str, Any]) -> Any:
+        context = state.get("context")
+        if isinstance(context, dict):
+            for key in ("encounter_id", "encounter"):
+                if context.get(key):
+                    return context.get(key)
+        for key in ("encounter_id", "encounter"):
+            if state.get(key):
+                return state.get(key)
+        return None
+
     def _stderr_tail(self, max_lines: int = 20) -> list[str]:
+        if self._stderr_tail_buffer:
+            return list(self._stderr_tail_buffer)[-max_lines:]
         if not self._stderr_path or not os.path.isfile(self._stderr_path):
             return []
         try:
@@ -362,6 +455,7 @@ class StS2CliProcessManager:
 
         self._stdout_queue = queue.Queue()
         self._reader_thread = None
+        self._stderr_thread = None
 
     def terminate(self) -> None:
         self.stop()
@@ -374,6 +468,25 @@ class StS2CliProcessManager:
                 self._stdout_queue.put(line)
         finally:
             self._stdout_queue.put(None)
+
+    def _pump_stderr(self) -> None:
+        if self._proc is None or self._proc.stderr is None:
+            return
+        try:
+            for line in self._proc.stderr:
+                text = line.rstrip()
+                self._stderr_tail_buffer.append(text)
+                if self._stderr_file is not None:
+                    try:
+                        self._stderr_file.write(line)
+                    except OSError:
+                        pass
+        finally:
+            if self._stderr_file is not None:
+                try:
+                    self._stderr_file.flush()
+                except OSError:
+                    pass
 
 
 def _process_rss_mb(pid: int) -> Optional[float]:

@@ -138,15 +138,42 @@ def parse_args() -> argparse.Namespace:
         help="Run N random valid-action combat episodes on the selected STS2 combat pool.",
     )
     parser.add_argument(
+        "--eval-random-baseline-freq",
+        type=int,
+        default=0,
+        help=(
+            "Also rerun the random baseline every N train iterations. "
+            "Default 0 means startup only."
+        ),
+    )
+    parser.add_argument(
         "--eval-combat-episodes",
         type=int,
         default=0,
-        help="Run N policy evaluation combat episodes after each training iteration.",
+        help="Run N policy evaluation combat episodes on --eval-combat-freq iterations.",
+    )
+    parser.add_argument(
+        "--eval-combat-freq",
+        type=int,
+        default=None,
+        help=(
+            "Run PPO combat eval every N train iterations. Defaults to 10 for "
+            "STS2 combat curriculum and 1 otherwise."
+        ),
     )
     parser.add_argument(
         "--eval-combat-deterministic",
         action="store_true",
         help="Use explore=False for --eval-combat-episodes.",
+    )
+    parser.add_argument(
+        "--eval-sts2-recycle-every-episodes",
+        type=int,
+        default=None,
+        help=(
+            "Episode recycle limit used only by manual STS2 eval envs. "
+            "Defaults to 1000 for STS2 combat eval; use 0 to disable."
+        ),
     )
     parser.add_argument(
         "--sts2-capture-stderr",
@@ -203,11 +230,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-rebuild", action="store_true")
     parser.add_argument("--debug-env-info", action="store_true")
     parser.add_argument("--num-gpus", type=float, default=0.0)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Optional run seed. With --sts2-combat-enemy-pool fixed this helps "
+            "reproduce a specific combat crash."
+        ),
+    )
     parser.add_argument("--train-batch-size", type=int, default=1024)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument("--num-epochs", type=int, default=4)
     parser.add_argument("--rollout-fragment-length", type=int, default=128)
-    parser.add_argument("--checkpoint-freq", type=int, default=1, help="Save every N RLlib train iterations.")
+    parser.add_argument(
+        "--checkpoint-freq",
+        type=int,
+        default=None,
+        help=(
+            "Save every N RLlib train iterations. Defaults to 10 for STS2 combat "
+            "curriculum and 1 otherwise. Use 0 to disable iteration checkpoints."
+        ),
+    )
     parser.add_argument(
         "--checkpoint-dir",
         default="",
@@ -344,6 +388,13 @@ def main() -> None:
     )
     args.sts2_recycle_every_steps = max(0, int(args.sts2_recycle_every_steps or 0))
     args.sts2_recycle_rss_mb = _resolve_sts2_recycle_rss_mb(args, game_key)
+    args.checkpoint_freq = _resolve_checkpoint_freq(args, game_key)
+    args.eval_combat_freq = _resolve_eval_combat_freq(args, game_key)
+    args.eval_random_baseline_freq = max(0, int(args.eval_random_baseline_freq or 0))
+    args.eval_sts2_recycle_every_episodes = _resolve_eval_sts2_recycle_every_episodes(
+        args,
+        game_key,
+    )
     checkpoint_dir = _resolve_checkpoint_dir(args, game_key)
     logger.info("Checkpoint directory: %s", checkpoint_dir)
     _validate_sts2_launch_config(args, game_key, logger)
@@ -380,6 +431,17 @@ def main() -> None:
             args.sts2_combat_room_type,
             args.sts2_combat_encounter,
             args.sts2_combat_enemy_pool,
+        )
+        logger.info(
+            "STS2 eval/checkpoint cadence: eval_combat_episodes=%d eval_combat_freq=%d "
+            "eval_random_baseline=%d eval_random_baseline_freq=%d checkpoint_freq=%d "
+            "eval_recycle_episodes=%d",
+            max(0, int(args.eval_combat_episodes or 0)),
+            args.eval_combat_freq,
+            max(0, int(args.eval_random_baseline or 0)),
+            args.eval_random_baseline_freq,
+            args.checkpoint_freq,
+            args.eval_sts2_recycle_every_episodes,
         )
     _warn_if_worker_count_is_aggressive(args, game_key, logger)
 
@@ -427,6 +489,8 @@ def main() -> None:
             "process_timeout": args.process_timeout_s,
             "ascension": args.ascension,
             "sts2_lang": args.sts2_lang,
+            "sts2_seed": args.seed,
+            "eval_sts2_recycle_every_episodes": args.eval_sts2_recycle_every_episodes,
         }
 
     from ray.rllib.algorithms.ppo import PPOConfig
@@ -438,6 +502,7 @@ def main() -> None:
     config = _configure_rollout_workers(config, args)
     config = _configure_training(config, args)
     config = _configure_resources(config, args)
+    config = _configure_seed(config, args)
     config = _configure_fault_tolerance(config, args)
     config = _configure_callbacks(config, ProgressMetricsCallback)
     config.model["custom_model"] = ACTION_MASK_MODEL
@@ -537,7 +602,28 @@ def main() -> None:
                     iteration_seconds,
                     step_delta,
                 )
-            if game_key == "sts2" and not args.smoke_test and args.eval_combat_episodes > 0:
+            iteration = int(result.get("training_iteration", 0) or 0)
+            if (
+                game_key == "sts2"
+                and not args.smoke_test
+                and args.eval_random_baseline > 0
+                and args.eval_random_baseline_freq > 0
+                and iteration > 0
+                and iteration % args.eval_random_baseline_freq == 0
+            ):
+                _run_random_combat_baseline(
+                    env_config=env_config,
+                    episodes=args.eval_random_baseline,
+                    logger=logger,
+                )
+            if (
+                game_key == "sts2"
+                and not args.smoke_test
+                and args.eval_combat_episodes > 0
+                and args.eval_combat_freq > 0
+                and iteration > 0
+                and iteration % args.eval_combat_freq == 0
+            ):
                 _run_policy_combat_eval(
                     algo=algo,
                     env_config=env_config,
@@ -545,7 +631,6 @@ def main() -> None:
                     deterministic=bool(args.eval_combat_deterministic),
                     logger=logger,
                 )
-            iteration = int(result.get("training_iteration", 0) or 0)
             if args.checkpoint_freq > 0 and iteration % args.checkpoint_freq == 0:
                 checkpoint_path = _save_checkpoint_with_metadata(
                     algo,
@@ -648,6 +733,16 @@ def _configure_resources(config: Any, args: argparse.Namespace) -> Any:
         except TypeError:
             return config.resources(num_gpus=args.num_gpus)
     return config
+
+
+def _configure_seed(config: Any, args: argparse.Namespace) -> Any:
+    seed = getattr(args, "seed", None)
+    if seed is None or not hasattr(config, "debugging"):
+        return config
+    try:
+        return config.debugging(seed=int(seed))
+    except TypeError:
+        return config
 
 
 def _configure_fault_tolerance(config: Any, args: argparse.Namespace) -> Any:
@@ -772,6 +867,7 @@ def _checkpoint_metadata_payload(
         "notes": getattr(args, "run_notes", "") or "",
         "heuristic_mode": getattr(args, "heuristic_mode", "none"),
         "heuristic_top_k": max(1, int(getattr(args, "heuristic_top_k", 1) or 1)),
+        "seed": getattr(args, "seed", None),
         "training": {
             "workers": int(getattr(args, "workers", 0) or 0),
             "envs_per_worker": int(getattr(args, "envs_per_worker", 0) or 0),
@@ -780,6 +876,16 @@ def _checkpoint_metadata_payload(
             "num_epochs": int(getattr(args, "num_epochs", 0) or 0),
             "rollout_fragment_length": int(
                 getattr(args, "rollout_fragment_length", 0) or 0
+            ),
+            "checkpoint_freq": int(getattr(args, "checkpoint_freq", 0) or 0),
+            "eval_combat_episodes": int(getattr(args, "eval_combat_episodes", 0) or 0),
+            "eval_combat_freq": int(getattr(args, "eval_combat_freq", 0) or 0),
+            "eval_random_baseline": int(getattr(args, "eval_random_baseline", 0) or 0),
+            "eval_random_baseline_freq": int(
+                getattr(args, "eval_random_baseline_freq", 0) or 0
+            ),
+            "eval_sts2_recycle_every_episodes": int(
+                getattr(args, "eval_sts2_recycle_every_episodes", 0) or 0
             ),
         },
         "engine": {
@@ -968,6 +1074,50 @@ def _resolve_sample_timeout(args: argparse.Namespace, game_key: str) -> float:
     return 600.0
 
 
+def _resolve_checkpoint_freq(args: argparse.Namespace, game_key: str) -> int:
+    value = getattr(args, "checkpoint_freq", None)
+    if value is not None:
+        return max(0, int(value))
+    if _is_sts2_combat_curriculum(args, game_key):
+        return 10
+    return 1
+
+
+def _resolve_eval_combat_freq(args: argparse.Namespace, game_key: str) -> int:
+    if int(getattr(args, "eval_combat_episodes", 0) or 0) <= 0:
+        return 0
+    value = getattr(args, "eval_combat_freq", None)
+    if value is not None:
+        return max(0, int(value))
+    if _is_sts2_combat_curriculum(args, game_key):
+        return 10
+    return 1
+
+
+def _resolve_eval_sts2_recycle_every_episodes(
+    args: argparse.Namespace,
+    game_key: str,
+) -> int:
+    if (
+        int(getattr(args, "eval_combat_episodes", 0) or 0) <= 0
+        and int(getattr(args, "eval_random_baseline", 0) or 0) <= 0
+    ):
+        return 0
+    value = getattr(args, "eval_sts2_recycle_every_episodes", None)
+    if value is not None:
+        return max(0, int(value))
+    if _is_sts2_combat_curriculum(args, game_key):
+        return 1000
+    return 0
+
+
+def _is_sts2_combat_curriculum(args: argparse.Namespace, game_key: str) -> bool:
+    return (
+        game_key == "sts2"
+        and str(getattr(args, "sts2_curriculum_mode", "")).strip().lower() == "combat"
+    )
+
+
 def _resolve_sts2_recycle_every_episodes(
     args: argparse.Namespace,
     game_key: str,
@@ -1136,6 +1286,9 @@ def _run_manual_combat_eval(
     if config.get("sts2_reward_mode") == "full_v3_2":
         config["sts2_reward_mode"] = "combat_sparse"
     config["debug_env_info"] = False
+    eval_recycle_episodes = config.pop("eval_sts2_recycle_every_episodes", None)
+    if eval_recycle_episodes is not None:
+        config["sts2_recycle_every_episodes"] = max(0, int(eval_recycle_episodes))
     env = make_sts_rllib_env(config)
     stats = _new_combat_eval_stats()
     try:

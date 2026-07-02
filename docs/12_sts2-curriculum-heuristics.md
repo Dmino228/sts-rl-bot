@@ -121,12 +121,29 @@ Benchmark helpers:
 ```powershell
 --eval-random-baseline 500 `
 --eval-combat-episodes 500 `
+--eval-combat-freq 10 `
 --eval-combat-deterministic
 ```
 
 The random baseline uses valid random actions on the same pool. PPO combat eval
 runs outside the training sampler and logs per-encounter win rate, HP lost, and
-combat steps.
+combat steps. The random baseline runs once at startup by default; set
+`--eval-random-baseline-freq N` only when you explicitly want to rerun it during
+training. In STS2 combat curriculum, PPO eval and checkpointing default to every
+10 train iterations.
+
+Crash reproduction:
+
+```powershell
+--sts2-combat-enemy-pool fixed `
+--sts2-combat-encounter ENTOMANCER_ELITE `
+--seed 12345 `
+--sts2-debug-episodes 1
+```
+
+Crash diagnostics include the selected encounter, turn/combat step, hand card
+IDs/names/costs/playability, selected card/target, a bounded recent trace, and
+the latest stderr tail.
 
 Deck randomization and per-character C1/C2 schedules are still later stages.
 

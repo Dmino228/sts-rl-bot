@@ -353,6 +353,42 @@ def test_train_rllib_allows_disabling_sts2_recycle_defaults():
     assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts2") == 0.0
 
 
+def test_train_rllib_resolves_combat_eval_and_checkpoint_cadence():
+    from rllib import train_rllib
+
+    args = argparse.Namespace(
+        checkpoint_freq=None,
+        eval_combat_episodes=500,
+        eval_combat_freq=None,
+        eval_sts2_recycle_every_episodes=None,
+        sts2_curriculum_mode="combat",
+    )
+
+    assert train_rllib._resolve_checkpoint_freq(args, "sts2") == 10
+    assert train_rllib._resolve_eval_combat_freq(args, "sts2") == 10
+    assert train_rllib._resolve_eval_sts2_recycle_every_episodes(args, "sts2") == 1000
+
+    args.eval_combat_freq = 25
+    args.checkpoint_freq = 25
+    args.eval_sts2_recycle_every_episodes = 0
+
+    assert train_rllib._resolve_checkpoint_freq(args, "sts2") == 25
+    assert train_rllib._resolve_eval_combat_freq(args, "sts2") == 25
+    assert train_rllib._resolve_eval_sts2_recycle_every_episodes(args, "sts2") == 0
+
+
+def test_train_rllib_disables_combat_eval_freq_when_no_eval_episodes():
+    from rllib import train_rllib
+
+    args = argparse.Namespace(
+        eval_combat_episodes=0,
+        eval_combat_freq=None,
+        sts2_curriculum_mode="combat",
+    )
+
+    assert train_rllib._resolve_eval_combat_freq(args, "sts2") == 0
+
+
 def test_make_heuristic_policy_only_enables_sts2_non_none_modes():
     from rllib.env_wrapper import _make_heuristic_policy
     from sts2.heuristics import StS2StrategicHeuristic
@@ -639,6 +675,7 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "sts2_combat_hp_loss_reward_scale": 0.03,
             "sts2_combat_action_penalty": 0.004,
             "sts2_debug_episodes": 2,
+            "sts2_seed": 123456,
         }
     )
 
@@ -656,6 +693,7 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
     assert captured_kwargs["sts2_combat_hp_loss_reward_scale"] == 0.03
     assert captured_kwargs["sts2_combat_action_penalty"] == 0.004
     assert captured_kwargs["sts2_debug_episodes"] == 2
+    assert captured_kwargs["sts2_seed"] == 123456
 
 
 def test_rllib_wrapper_clips_out_of_bounds_observations():

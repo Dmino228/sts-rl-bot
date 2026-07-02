@@ -560,6 +560,23 @@ def test_env_reset_sts2_combat_curriculum_enters_encounter():
     env.close()
 
 
+def test_env_reset_sts2_combat_curriculum_uses_fixed_seed():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        sts2_seed=98765,
+    )
+    fake_manager = FakeStS2ProcessManager([_map_decision(), _combat_decision()])
+    env.process_manager = fake_manager
+
+    env.reset()
+
+    assert fake_manager.sent[0]["seed"] == "98765"
+    env.close()
+
+
 def test_env_reset_sts2_combat_curriculum_samples_enemy_pool():
     env = SlayTheSpireEnv(
         game_version=2,
@@ -654,6 +671,38 @@ def test_sts2_combat_sparse_does_not_apply_full_run_macro_rewards():
     env.close()
 
 
+def test_sts2_env_process_diagnostics_include_selected_card_and_trace():
+    class DiagnosticFakeManager(FakeStS2ProcessManager):
+        def diagnostic_snapshot(self):
+            return {"pid": 123, "stderr_tail": ["boom"], "io_history": []}
+
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_sparse",
+        sts2_combat_encounter="ENTOMANCER_ELITE",
+    )
+    env.process_manager = DiagnosticFakeManager([])
+    env.current_state = normalize_sts2_state(_combat_decision())
+    env._current_combat_encounter = "ENTOMANCER_ELITE"
+    command = {
+        "cmd": "action",
+        "action": "play_card",
+        "args": {"card_index": 0, "target_index": 0},
+    }
+
+    env._record_combat_trace(TARGETED_PLAY_BASE, command, env.current_state)
+    diagnostics = env._process_diagnostics()
+
+    assert diagnostics["env"]["encounter_id"] == "ENTOMANCER_ELITE"
+    assert diagnostics["env"]["last_action"]["chosen_card"]["name"] == "Strike"
+    assert diagnostics["env"]["last_action"]["chosen_card"]["cost"] == 1
+    assert diagnostics["env"]["last_action"]["target"]["index"] == 0
+    assert diagnostics["env"]["recent_trace"][-1]["action_id"] == TARGETED_PLAY_BASE
+    env.close()
+
+
 def test_sts2_full_run_combat_reward_behavior_remains_non_terminal():
     env = SlayTheSpireEnv(game_version=2, sts2_cli_path="fake-sts2-cli")
     env.current_state = normalize_sts2_state(_combat_decision())
@@ -713,13 +762,27 @@ def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
     manager._last_state = {
         "type": "decision",
         "decision": "card_select",
+        "round": 3,
         "min_select": 1,
         "max_select": 2,
         "cards": [{"index": 0, "name": "Strike", "type": "Attack"}, {"index": 1}],
+        "hand": [
+            {
+                "index": 4,
+                "id": "CARD.BASH",
+                "name": "Bash",
+                "cost": 2,
+                "can_play": True,
+            }
+        ],
+        "enemies": [{"index": 0, "name": "Elite", "hp": 42, "intents": []}],
         "context": {"act": 1, "floor": 4, "room_type": "Monster"},
     }
+    manager._stderr_tail_buffer.append("boom from stderr")
+    manager._io_history.append({"kind": "command", "value": command})
 
     message = manager._timeout_message("No sts2-cli JSON state received")
+    snapshot = manager.diagnostic_snapshot()
 
     assert "within 3.0s" in message
     assert "worker=sts2_worker_7" in message
@@ -729,6 +792,11 @@ def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
     assert "'cards_count': 2" in message
     assert "'room_type': 'Monster'" in message
     assert "'name': 'Strike'" in message
+    assert "boom from stderr" in message
+    assert snapshot["last_state"]["round"] == 3
+    assert snapshot["last_state"]["hand"][0]["id"] == "CARD.BASH"
+    assert snapshot["last_state"]["enemies"][0]["name"] == "Elite"
+    assert snapshot["io_history"][-1]["value"] == command
 
 
 def test_sts2_process_manager_recycle_reason_after_episode_limit(tmp_path):

@@ -267,6 +267,7 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
             _config_value(env_config, "sts2_combat_action_penalty", 0.001)
         ),
         sts2_debug_episodes=int(_config_value(env_config, "sts2_debug_episodes", 0)),
+        sts2_seed=_config_value(env_config, "sts2_seed", None),
     )
     heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
     return RLLibActionMaskEnv(
