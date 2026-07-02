@@ -83,8 +83,29 @@ python rllib\train_rllib.py `
   --deck-mode starter `
   --enemy-pool act1 `
   --sts2-curriculum-mode combat `
+  --sts2-reward-mode combat_sparse `
   --sts2-combat-encounter SHRINKER_BEETLE_WEAK
 ```
+
+In combat curriculum mode one episode is exactly one fight. The episode
+terminates immediately on combat win, loss, or timeout, and does not continue to
+map/card rewards/full-run macro decisions.
+
+Reward modes:
+
+- `full_v3_2`: legacy full-run reward, preserved for compatibility.
+- `combat_sparse`: `+1` win, `-1` loss/timeout, `0` otherwise.
+- `combat_dense`: terminal sparse reward plus small configurable damage dealt,
+  HP lost, and action-penalty shaping. It never includes floor/relic/card/act
+  completion rewards.
+
+Debugging:
+
+```powershell
+--sts2-debug-episodes 3
+```
+
+logs detailed per-step combat state for the first N episodes per worker.
 
 It does not yet implement the full Act 1 randomized enemy pool, deck
 randomization, or per-character C1/C2 schedules. It is the first integration

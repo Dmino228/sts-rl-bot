@@ -76,6 +76,15 @@ def parse_args() -> argparse.Namespace:
         help="STS2 reset profile. 'combat' starts a run and immediately enters one combat room.",
     )
     parser.add_argument(
+        "--sts2-reward-mode",
+        choices=["full_v3_2", "combat_sparse", "combat_dense"],
+        default="full_v3_2",
+        help=(
+            "Reward function for STS2. combat_sparse/dense are intended for "
+            "--sts2-curriculum-mode combat."
+        ),
+    )
+    parser.add_argument(
         "--sts2-combat-room-type",
         default="combat",
         help="Room type used by --sts2-curriculum-mode combat.",
@@ -84,6 +93,30 @@ def parse_args() -> argparse.Namespace:
         "--sts2-combat-encounter",
         default="SHRINKER_BEETLE_WEAK",
         help="Encounter id used by --sts2-curriculum-mode combat.",
+    )
+    parser.add_argument(
+        "--sts2-combat-damage-reward-scale",
+        type=float,
+        default=0.01,
+        help="Dense combat reward multiplier for monster HP damage dealt.",
+    )
+    parser.add_argument(
+        "--sts2-combat-hp-loss-reward-scale",
+        type=float,
+        default=0.01,
+        help="Dense combat reward penalty multiplier for player HP lost.",
+    )
+    parser.add_argument(
+        "--sts2-combat-action-penalty",
+        type=float,
+        default=0.001,
+        help="Dense combat reward per-action penalty.",
+    )
+    parser.add_argument(
+        "--sts2-debug-episodes",
+        type=int,
+        default=0,
+        help="Log detailed combat decisions for the first N STS2 episodes per worker.",
     )
     parser.add_argument(
         "--sts2-capture-stderr",
@@ -311,8 +344,9 @@ def main() -> None:
             max(1, int(args.heuristic_top_k)),
         )
         logger.info(
-            "STS2 curriculum: mode=%s room_type=%s encounter=%s",
+            "STS2 curriculum: mode=%s reward_mode=%s room_type=%s encounter=%s",
             args.sts2_curriculum_mode,
+            args.sts2_reward_mode,
             args.sts2_combat_room_type,
             args.sts2_combat_encounter,
         )
@@ -351,8 +385,13 @@ def main() -> None:
             "sts2_recycle_every_steps": args.sts2_recycle_every_steps,
             "sts2_recycle_rss_mb": args.sts2_recycle_rss_mb,
             "sts2_curriculum_mode": args.sts2_curriculum_mode,
+            "sts2_reward_mode": args.sts2_reward_mode,
             "sts2_combat_room_type": args.sts2_combat_room_type,
             "sts2_combat_encounter": args.sts2_combat_encounter,
+            "sts2_combat_damage_reward_scale": args.sts2_combat_damage_reward_scale,
+            "sts2_combat_hp_loss_reward_scale": args.sts2_combat_hp_loss_reward_scale,
+            "sts2_combat_action_penalty": args.sts2_combat_action_penalty,
+            "sts2_debug_episodes": args.sts2_debug_episodes,
             "process_timeout": args.process_timeout_s,
             "ascension": args.ascension,
             "sts2_lang": args.sts2_lang,
@@ -415,12 +454,16 @@ def main() -> None:
             if reward is None:
                 reward = result.get("episode_reward_mean")
             progress = _progress_log_metrics(result)
+            combat = _combat_log_metrics(result)
             logger.info(
                 (
                     "RLlib iteration=%s env_steps=%d (+%d) iter_s=%.2f "
                     "steps/sec=%.1f avg_step_ms=%.2f steps=%d reward_mean=%s "
                     "floor_mean=%s max_floor=%s boss_reached%%=%s "
-                    "boss_killed%%=%s act2%%=%s"
+                    "boss_killed%%=%s act2%%=%s combat_win_rate=%s "
+                    "combat_loss_rate=%s combat_timeout_rate=%s avg_combat_steps=%s "
+                    "avg_hp_remaining_on_win=%s avg_hp_lost=%s "
+                    "avg_monster_hp_remaining_on_loss=%s encounters=%s reasons=%s"
                 ),
                 result.get("training_iteration"),
                 current_steps,
@@ -435,6 +478,15 @@ def main() -> None:
                 progress["boss_reached_pct"],
                 progress["boss_killed_pct"],
                 progress["act2_pct"],
+                combat["combat_win_rate"],
+                combat["combat_loss_rate"],
+                combat["combat_timeout_rate"],
+                combat["avg_combat_steps"],
+                combat["avg_hp_remaining_on_win"],
+                combat["avg_hp_lost"],
+                combat["avg_monster_hp_remaining_on_loss"],
+                combat["encounters"],
+                combat["terminated_reasons"],
             )
             if args.slow_iteration_s > 0 and iteration_seconds > args.slow_iteration_s:
                 logger.warning(
@@ -685,12 +737,23 @@ def _checkpoint_metadata_payload(
         },
         "engine": {
             "sts2_curriculum_mode": getattr(args, "sts2_curriculum_mode", "full_run"),
+            "sts2_reward_mode": getattr(args, "sts2_reward_mode", "full_v3_2"),
             "sts2_combat_room_type": getattr(args, "sts2_combat_room_type", "combat"),
             "sts2_combat_encounter": getattr(
                 args,
                 "sts2_combat_encounter",
                 "SHRINKER_BEETLE_WEAK",
             ),
+            "sts2_combat_damage_reward_scale": float(
+                getattr(args, "sts2_combat_damage_reward_scale", 0.01) or 0.01
+            ),
+            "sts2_combat_hp_loss_reward_scale": float(
+                getattr(args, "sts2_combat_hp_loss_reward_scale", 0.01) or 0.01
+            ),
+            "sts2_combat_action_penalty": float(
+                getattr(args, "sts2_combat_action_penalty", 0.001) or 0.001
+            ),
+            "sts2_debug_episodes": int(getattr(args, "sts2_debug_episodes", 0) or 0),
             "sts2_cli_path": getattr(args, "sts2_cli_path", ""),
             "sts2_cli_cwd": getattr(args, "sts2_cli_cwd", ""),
             "sts2_cli_args": list(getattr(args, "sts2_cli_args", []) or []),
@@ -961,6 +1024,26 @@ def _progress_log_metrics(result: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
+    return {
+        "combat_win_rate": _format_metric(_custom_metric(result, "combat_win_rate_mean")),
+        "combat_loss_rate": _format_metric(_custom_metric(result, "combat_loss_rate_mean")),
+        "combat_timeout_rate": _format_metric(
+            _custom_metric(result, "combat_timeout_rate_mean")
+        ),
+        "avg_combat_steps": _format_metric(_custom_metric(result, "avg_combat_steps_mean")),
+        "avg_hp_remaining_on_win": _format_metric(
+            _custom_metric(result, "avg_hp_remaining_on_win_mean")
+        ),
+        "avg_hp_lost": _format_metric(_custom_metric(result, "avg_hp_lost_mean")),
+        "avg_monster_hp_remaining_on_loss": _format_metric(
+            _custom_metric(result, "avg_monster_hp_remaining_on_loss_mean")
+        ),
+        "encounters": _prefixed_custom_metrics(result, "encounter_id_"),
+        "terminated_reasons": _prefixed_custom_metrics(result, "terminated_reason_"),
+    }
+
+
 def _custom_metric(result: dict[str, Any], key: str) -> Any:
     custom_metrics = result.get("custom_metrics")
     if isinstance(custom_metrics, dict) and key in custom_metrics:
@@ -975,6 +1058,36 @@ def _custom_metric(result: dict[str, Any], key: str) -> Any:
             return env_runners[key]
 
     return None
+
+
+def _prefixed_custom_metrics(result: dict[str, Any], prefix: str) -> str:
+    metric_sources: list[dict[str, Any]] = []
+    custom_metrics = result.get("custom_metrics")
+    if isinstance(custom_metrics, dict):
+        metric_sources.append(custom_metrics)
+    env_runners = result.get("env_runners")
+    if isinstance(env_runners, dict):
+        env_custom_metrics = env_runners.get("custom_metrics")
+        if isinstance(env_custom_metrics, dict):
+            metric_sources.append(env_custom_metrics)
+        metric_sources.append(env_runners)
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for source in metric_sources:
+        for key, value in sorted(source.items()):
+            if not key.startswith(prefix):
+                continue
+            label = key[len(prefix):]
+            suffix = "_mean"
+            if not label.endswith(suffix):
+                continue
+            label = label[: -len(suffix)]
+            if label in seen:
+                continue
+            seen.add(label)
+            items.append(f"{label}:{_format_metric(value)}")
+    return ",".join(items) if items else "n/a"
 
 
 def _format_metric(value: Any) -> str:

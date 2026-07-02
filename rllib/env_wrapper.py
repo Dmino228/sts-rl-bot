@@ -247,12 +247,23 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_curriculum_mode=str(
             _config_value(env_config, "sts2_curriculum_mode", "full_run")
         ),
+        sts2_reward_mode=str(_config_value(env_config, "sts2_reward_mode", "full_v3_2")),
         sts2_combat_room_type=str(
             _config_value(env_config, "sts2_combat_room_type", "combat")
         ),
         sts2_combat_encounter=str(
             _config_value(env_config, "sts2_combat_encounter", "SHRINKER_BEETLE_WEAK")
         ),
+        sts2_combat_damage_reward_scale=float(
+            _config_value(env_config, "sts2_combat_damage_reward_scale", 0.01)
+        ),
+        sts2_combat_hp_loss_reward_scale=float(
+            _config_value(env_config, "sts2_combat_hp_loss_reward_scale", 0.01)
+        ),
+        sts2_combat_action_penalty=float(
+            _config_value(env_config, "sts2_combat_action_penalty", 0.001)
+        ),
+        sts2_debug_episodes=int(_config_value(env_config, "sts2_debug_episodes", 0)),
     )
     heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
     return RLLibActionMaskEnv(

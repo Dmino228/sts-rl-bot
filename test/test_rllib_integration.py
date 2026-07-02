@@ -440,6 +440,38 @@ def test_progress_metrics_callback_aggregates_episode_info():
     assert episode.custom_metrics["act2_pct"] == 100.0
 
 
+def test_progress_metrics_callback_aggregates_combat_info():
+    from rllib.progress_metrics import ProgressMetricsCallback
+
+    callback = ProgressMetricsCallback()
+    episode = FakeEpisode()
+    callback.on_episode_start(episode=episode)
+    episode._info = {
+        "progress_metrics": {
+            "combat_win": 1.0,
+            "combat_loss": 0.0,
+            "combat_timeout": 0.0,
+            "combat_steps": 7,
+            "hp_remaining_on_win": 42,
+            "hp_lost": 8,
+            "monster_hp_remaining_on_loss": 0,
+            "encounter_id": "SHRINKER_BEETLE_WEAK",
+            "terminated_reason": "win",
+        }
+    }
+    callback.on_episode_end(episode=episode)
+
+    assert episode.custom_metrics["combat_win_rate"] == 1.0
+    assert episode.custom_metrics["combat_loss_rate"] == 0.0
+    assert episode.custom_metrics["combat_timeout_rate"] == 0.0
+    assert episode.custom_metrics["avg_combat_steps"] == 7.0
+    assert episode.custom_metrics["avg_hp_remaining_on_win"] == 42.0
+    assert episode.custom_metrics["avg_hp_lost"] == 8.0
+    assert episode.custom_metrics["avg_monster_hp_remaining_on_loss"] == 0.0
+    assert episode.custom_metrics["encounter_id_SHRINKER_BEETLE_WEAK"] == 1.0
+    assert episode.custom_metrics["terminated_reason_win"] == 1.0
+
+
 def test_train_rllib_progress_log_metrics_reads_custom_metrics():
     from rllib import train_rllib
 
@@ -462,6 +494,33 @@ def test_train_rllib_progress_log_metrics_reads_custom_metrics():
         "boss_killed_pct": "12.50",
         "act2_pct": "12.50",
     }
+
+
+def test_train_rllib_combat_log_metrics_reads_custom_metrics():
+    from rllib import train_rllib
+
+    metrics = train_rllib._combat_log_metrics(
+        {
+            "env_runners": {
+                "combat_win_rate_mean": 0.75,
+                "combat_loss_rate_mean": 0.20,
+                "combat_timeout_rate_mean": 0.05,
+                "avg_combat_steps_mean": 9.5,
+                "avg_hp_remaining_on_win_mean": 31.0,
+                "avg_hp_lost_mean": 12.0,
+                "avg_monster_hp_remaining_on_loss_mean": 6.0,
+                "encounter_id_SHRINKER_BEETLE_WEAK_mean": 4.0,
+                "terminated_reason_win_mean": 3.0,
+            }
+        }
+    )
+
+    assert metrics["combat_win_rate"] == "0.75"
+    assert metrics["combat_loss_rate"] == "0.20"
+    assert metrics["combat_timeout_rate"] == "0.05"
+    assert metrics["avg_combat_steps"] == "9.50"
+    assert metrics["encounters"] == "SHRINKER_BEETLE_WEAK:4.00"
+    assert metrics["terminated_reasons"] == "win:3.00"
 
 
 def test_result_env_step_delta_prefers_this_iter_metric():
@@ -496,8 +555,13 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "sts2_recycle_every_steps": 4567,
             "sts2_recycle_rss_mb": 512.5,
             "sts2_curriculum_mode": "combat",
+            "sts2_reward_mode": "combat_sparse",
             "sts2_combat_room_type": "elite",
             "sts2_combat_encounter": "SHRINKER_BEETLE_WEAK",
+            "sts2_combat_damage_reward_scale": 0.02,
+            "sts2_combat_hp_loss_reward_scale": 0.03,
+            "sts2_combat_action_penalty": 0.004,
+            "sts2_debug_episodes": 2,
         }
     )
 
@@ -507,8 +571,13 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
     assert captured_kwargs["sts2_recycle_every_steps"] == 4567
     assert captured_kwargs["sts2_recycle_rss_mb"] == 512.5
     assert captured_kwargs["sts2_curriculum_mode"] == "combat"
+    assert captured_kwargs["sts2_reward_mode"] == "combat_sparse"
     assert captured_kwargs["sts2_combat_room_type"] == "elite"
     assert captured_kwargs["sts2_combat_encounter"] == "SHRINKER_BEETLE_WEAK"
+    assert captured_kwargs["sts2_combat_damage_reward_scale"] == 0.02
+    assert captured_kwargs["sts2_combat_hp_loss_reward_scale"] == 0.03
+    assert captured_kwargs["sts2_combat_action_penalty"] == 0.004
+    assert captured_kwargs["sts2_debug_episodes"] == 2
 
 
 def test_rllib_wrapper_clips_out_of_bounds_observations():

@@ -64,8 +64,13 @@ class SlayTheSpireEnv(gym.Env):
         sts2_ascension: int = 0,
         sts2_lang: str = "en",
         sts2_curriculum_mode: str = "full_run",
+        sts2_reward_mode: str = "full_v3_2",
         sts2_combat_room_type: str = "combat",
         sts2_combat_encounter: str = "SHRINKER_BEETLE_WEAK",
+        sts2_combat_damage_reward_scale: float = 0.01,
+        sts2_combat_hp_loss_reward_scale: float = 0.01,
+        sts2_combat_action_penalty: float = 0.001,
+        sts2_debug_episodes: int = 0,
     ) -> None:
         super().__init__()
 
@@ -130,9 +135,21 @@ class SlayTheSpireEnv(gym.Env):
         self.episode_ended_by_act_completion: bool = False
         self.sts2_ascension = int(sts2_ascension)
         self.sts2_lang = sts2_lang
-        self.sts2_curriculum_mode = sts2_curriculum_mode
+        self.sts2_curriculum_mode = sts2_curriculum_mode.strip().lower()
+        self.sts2_reward_mode = sts2_reward_mode.strip().lower()
         self.sts2_combat_room_type = sts2_combat_room_type
         self.sts2_combat_encounter = sts2_combat_encounter
+        self.sts2_combat_damage_reward_scale = float(sts2_combat_damage_reward_scale)
+        self.sts2_combat_hp_loss_reward_scale = float(sts2_combat_hp_loss_reward_scale)
+        self.sts2_combat_action_penalty = float(sts2_combat_action_penalty)
+        self.sts2_debug_episodes = max(0, int(sts2_debug_episodes))
+        self._episode_index = 0
+        self._combat_initial_hp: Optional[int] = None
+        self._combat_initial_monster_hp: Optional[int] = None
+        self._last_reward_parts: Dict[str, float] = {}
+        self._last_done_reason = ""
+        self._last_action_id: Optional[int] = None
+        self._last_action_command: Any = None
 
     def reset(
         self,
@@ -260,6 +277,8 @@ class SlayTheSpireEnv(gym.Env):
         self.current_selections.clear()
         if self.current_state:
             self.current_state["_env_selections"] = self.current_selections.copy()
+        self._episode_index += 1
+        self._reset_combat_episode_tracking()
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self._refresh_action_mask()
@@ -291,6 +310,8 @@ class SlayTheSpireEnv(gym.Env):
         """
         try:
             action_str = self.action_mapper.get_action_string(action, self.current_state)
+            self._last_action_id = int(action)
+            self._last_action_command = action_str
             self.process_manager.send_command(action_str)
             
             old_screen_type = "NONE"
@@ -373,12 +394,26 @@ class SlayTheSpireEnv(gym.Env):
         obs = self.state_encoder.encode(self.current_state)
         reward = self._calculate_reward()
         
-        if self.combat_step_count > MAX_COMBAT_STEPS:
-            terminated = True
-            
         truncated = False
+        if self._is_combat_curriculum():
+            if not self._last_done_reason:
+                game_state = self.current_state.get("game_state", {})
+                if isinstance(game_state, dict):
+                    self._last_done_reason = self._combat_done_reason(
+                        game_state,
+                        self._current_player_hp(game_state),
+                    )
+            done_reason = self._last_done_reason
+            terminated = done_reason in {"win", "loss"}
+            truncated = done_reason == "timeout"
+        elif self.combat_step_count > MAX_COMBAT_STEPS:
+            terminated = True
+
         mask = self._refresh_action_mask()
         info = self._make_info(mask)
+        if self._is_combat_curriculum():
+            info["combat_done_reason"] = self._last_done_reason or "ongoing"
+            self._maybe_log_debug_episode(reward, terminated, truncated)
 
         return obs, reward, terminated, truncated, info
 
@@ -444,13 +479,15 @@ class SlayTheSpireEnv(gym.Env):
         )
         boss_killed = act > 1 or self.episode_ended_by_act_completion
 
-        return {
+        metrics = {
             "floor": floor,
             "act": act,
             "boss_reached": float(boss_reached),
             "boss_killed": float(boss_killed),
             "act2": float(act >= 2),
         }
+        metrics.update(self._combat_progress_metrics())
+        return metrics
 
     def _can_soft_reset_at_act_boundary(self, game_state: Dict[str, Any]) -> bool:
         """Return True when reset() should continue from a completed act."""
@@ -596,6 +633,11 @@ class SlayTheSpireEnv(gym.Env):
     # ──────────────────────────────────────────────────────────────
 
     def _calculate_reward(self) -> float:
+        if self._uses_combat_reward_mode():
+            return self._calculate_combat_reward()
+        return self._calculate_full_v3_2_reward()
+
+    def _calculate_full_v3_2_reward(self) -> float:
         """V3.2 reward: clipped HP deltas, robust terminal handling."""
         if not self.current_state:
             return 0.0
@@ -748,6 +790,188 @@ class SlayTheSpireEnv(gym.Env):
             )
 
         return reward
+
+    def _is_combat_curriculum(self) -> bool:
+        return self.game_version == "sts2" and self.sts2_curriculum_mode == "combat"
+
+    def _uses_combat_reward_mode(self) -> bool:
+        return self._is_combat_curriculum() and self.sts2_reward_mode in {
+            "combat_sparse",
+            "combat_dense",
+        }
+
+    def _reset_combat_episode_tracking(self) -> None:
+        self._last_done_reason = ""
+        self._last_reward_parts = {}
+        if not self._is_combat_curriculum():
+            self._combat_initial_hp = None
+            self._combat_initial_monster_hp = None
+            return
+
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            self._combat_initial_hp = None
+            self._combat_initial_monster_hp = None
+            return
+
+        self._combat_initial_hp = self._current_player_hp(game_state)
+        self._combat_initial_monster_hp = self._get_total_monster_hp(game_state)
+        self.last_player_hp = self._combat_initial_hp
+        self.last_monster_total_hp = self._combat_initial_monster_hp
+        self.last_in_combat = self._is_in_combat(self.current_state)
+
+    def _calculate_combat_reward(self) -> float:
+        if not self.current_state:
+            self._last_reward_parts = {}
+            return 0.0
+
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            self._last_reward_parts = {}
+            return 0.0
+
+        self.combat_step_count += 1
+        current_hp = self._current_player_hp(game_state)
+        current_monster_hp = self._get_total_monster_hp(game_state)
+        done_reason = self._combat_done_reason(game_state, current_hp)
+        self._last_done_reason = done_reason
+
+        parts: Dict[str, float] = {}
+        if done_reason == "win":
+            parts["terminal_win"] = 1.0
+        elif done_reason in {"loss", "timeout"}:
+            parts[f"terminal_{done_reason}"] = -1.0
+        elif self.sts2_reward_mode == "combat_dense":
+            if self.last_monster_total_hp is not None:
+                damage_dealt = max(0, self.last_monster_total_hp - current_monster_hp)
+                parts["damage_dealt"] = damage_dealt * self.sts2_combat_damage_reward_scale
+            if self.last_player_hp is not None and current_hp is not None:
+                hp_lost = max(0, self.last_player_hp - current_hp)
+                parts["hp_lost"] = -hp_lost * self.sts2_combat_hp_loss_reward_scale
+            parts["action_penalty"] = -self.sts2_combat_action_penalty
+
+        reward = float(sum(parts.values()))
+        self._last_reward_parts = parts
+
+        self.last_player_hp = current_hp
+        self.last_max_hp = self._current_player_max_hp(game_state)
+        self.last_monster_total_hp = current_monster_hp
+        self.last_screen_type = str(game_state.get("screen_type", "NONE"))
+        self.last_in_combat = self._is_in_combat(self.current_state)
+        self.step_count += 1
+        return reward
+
+    def _combat_done_reason(
+        self,
+        game_state: Dict[str, Any],
+        current_hp: Optional[int],
+    ) -> str:
+        screen_type = str(game_state.get("screen_type", "")).upper()
+        if screen_type in {"GAME_OVER", "DEATH"} or not self.current_state.get("in_game", True):
+            return "loss"
+        if current_hp is not None and current_hp <= 0:
+            return "loss"
+        if screen_type == "COMBAT_REWARD":
+            return "win"
+        if self.combat_step_count > MAX_COMBAT_STEPS:
+            return "timeout"
+        return ""
+
+    def _current_player_hp(self, game_state: Dict[str, Any]) -> Optional[int]:
+        combat_state = game_state.get("combat_state", {})
+        if isinstance(combat_state, dict):
+            player = combat_state.get("player", {})
+            if isinstance(player, dict) and player.get("current_hp") is not None:
+                return self._safe_int(player.get("current_hp"), 0)
+        if game_state.get("current_hp") is not None:
+            return self._safe_int(game_state.get("current_hp"), 0)
+        return None
+
+    def _current_player_max_hp(self, game_state: Dict[str, Any]) -> Optional[int]:
+        combat_state = game_state.get("combat_state", {})
+        if isinstance(combat_state, dict):
+            player = combat_state.get("player", {})
+            if isinstance(player, dict) and player.get("max_hp") is not None:
+                return self._safe_int(player.get("max_hp"), 0)
+        if game_state.get("max_hp") is not None:
+            return self._safe_int(game_state.get("max_hp"), 0)
+        return None
+
+    def _combat_progress_metrics(self) -> Dict[str, Any]:
+        if not self._is_combat_curriculum():
+            return {}
+
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            game_state = {}
+        current_hp = self._current_player_hp(game_state)
+        monster_hp = self._get_total_monster_hp(game_state)
+        reason = self._last_done_reason or "ongoing"
+        hp_initial = self._combat_initial_hp
+        hp_lost = 0.0
+        if hp_initial is not None and current_hp is not None:
+            hp_lost = float(max(0, hp_initial - current_hp))
+
+        return {
+            "combat_win": float(reason == "win"),
+            "combat_loss": float(reason == "loss"),
+            "combat_timeout": float(reason == "timeout"),
+            "combat_steps": float(self.combat_step_count),
+            "hp_remaining_on_win": float(current_hp or 0) if reason == "win" else 0.0,
+            "hp_lost": hp_lost,
+            "monster_hp_remaining_on_loss": float(monster_hp) if reason == "loss" else 0.0,
+            "encounter_id": self.sts2_combat_encounter,
+            "terminated_reason": reason,
+        }
+
+    def _maybe_log_debug_episode(
+        self,
+        reward: float,
+        terminated: bool,
+        truncated: bool,
+    ) -> None:
+        if self.sts2_debug_episodes <= 0 or self._episode_index > self.sts2_debug_episodes:
+            return
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            game_state = {}
+        combat_state = game_state.get("combat_state", {})
+        if not isinstance(combat_state, dict):
+            combat_state = {}
+        player = combat_state.get("player", {}) if isinstance(combat_state, dict) else {}
+        monsters = combat_state.get("monsters", []) if isinstance(combat_state, dict) else []
+        hand = combat_state.get("hand", []) if isinstance(combat_state, dict) else []
+        print(
+            "[STS2 COMBAT DEBUG] "
+            f"worker={self.worker_id} episode={self._episode_index} "
+            f"encounter={self.sts2_combat_encounter} step={self.combat_step_count} "
+            f"hp={player.get('current_hp', game_state.get('current_hp'))} "
+            f"block={player.get('block')} energy={player.get('energy')} "
+            f"hand={[card.get('name', card.get('id')) for card in hand if isinstance(card, dict)]} "
+            f"monsters={self._monster_debug(monsters)} action_id={self._last_action_id} "
+            f"command={self._last_action_command} reward={reward:.3f} "
+            f"parts={self._last_reward_parts} done={self._last_done_reason or 'ongoing'} "
+            f"terminated={terminated} truncated={truncated}",
+            file=sys.stderr,
+        )
+
+    @staticmethod
+    def _monster_debug(monsters: Any) -> List[Dict[str, Any]]:
+        if not isinstance(monsters, list):
+            return []
+        result: List[Dict[str, Any]] = []
+        for monster in monsters:
+            if not isinstance(monster, dict):
+                continue
+            result.append(
+                {
+                    "hp": monster.get("current_hp", monster.get("hp")),
+                    "max_hp": monster.get("max_hp"),
+                    "intent": monster.get("intent"),
+                    "damage": monster.get("move_adjusted_damage"),
+                }
+            )
+        return result
 
     def close(self) -> None:
         """No-op — CommunicationMod manages our lifecycle."""

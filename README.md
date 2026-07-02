@@ -177,12 +177,17 @@ python rllib\train_rllib.py `
   --deck-mode starter `
   --enemy-pool act1 `
   --sts2-curriculum-mode combat `
+  --sts2-reward-mode combat_sparse `
   --sts2-combat-encounter SHRINKER_BEETLE_WEAK
 ```
 
 This still uses the official `Sts2Headless` engine. It starts a normal run, then
 uses the headless JSON command `enter_room` to jump into one combat encounter.
-The broader Act 1 enemy pool and deck randomization are planned follow-ups.
+In `combat` curriculum mode the episode ends as soon as that fight is won, lost,
+or times out. `combat_sparse` gives `+1` for a win, `-1` for a loss/timeout, and
+`0` for intermediate combat steps. `combat_dense` keeps the same terminal
+signals and adds small configurable damage/hp/action shaping. The broader Act 1
+enemy pool and deck randomization are planned follow-ups.
 
 ### StS1 RLlib Training
 

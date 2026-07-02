@@ -73,6 +73,12 @@ The first exposed selector is `--sts2-combat-encounter`, defaulting to
 curriculum plan; randomized Act 1 pools and controlled deck mutation should be
 added after the single-encounter path is verified.
 
+Combat curriculum semantics are intentionally different from full-run training:
+one episode is exactly one fight. The episode terminates on combat win, loss, or
+timeout. `--sts2-reward-mode combat_sparse` uses `+1/-1/0` sparse fight rewards,
+while `combat_dense` adds only small combat-local shaping and excludes
+floor/relic/card/act-completion rewards.
+
 ## 4. Expected Output
 The agent is responsible for:
 1. Reorganizing the files into `sb3/`, `rllib/`, and root.

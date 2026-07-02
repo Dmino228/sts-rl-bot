@@ -117,6 +117,33 @@ def _combat_decision():
     }
 
 
+def _card_reward_decision(floor=1, hp=70, relics=None):
+    return {
+        "type": "decision",
+        "decision": "card_reward",
+        "context": {"act": 1, "floor": floor, "room_type": "Monster"},
+        "cards": [{"index": 0, "name": "Pommel Strike"}],
+        "can_skip": True,
+        "player": {
+            "hp": hp,
+            "max_hp": 80,
+            "gold": 12,
+            "deck": [{"name": "Strike"}],
+            "relics": relics or [{"name": "Burning Blood"}],
+        },
+    }
+
+
+def _game_over_decision():
+    return {
+        "type": "decision",
+        "decision": "game_over",
+        "victory": False,
+        "context": {"act": 1, "floor": 1, "room_type": "Monster"},
+        "player": {"hp": 0, "max_hp": 80, "deck": [], "relics": []},
+    }
+
+
 def test_stdio_overlay_serializes_json_commands():
     overlay = StS2StdIOOverlay()
 
@@ -530,6 +557,97 @@ def test_env_reset_sts2_combat_curriculum_enters_encounter():
     ]
     assert obs.shape == (349,)
     assert info["action_mask"][TARGETED_PLAY_BASE] == 1
+    env.close()
+
+
+def test_sts2_combat_sparse_win_terminates_after_combat_reward():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_sparse",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+    )
+    fake_manager = FakeStS2ProcessManager(
+        [_map_decision(), _combat_decision(), _card_reward_decision()]
+    )
+    env.process_manager = fake_manager
+    env.reset(seed=123)
+
+    _obs, reward, terminated, truncated, info = env.step(END_TURN_ACTION)
+
+    assert terminated is True
+    assert truncated is False
+    assert reward == pytest.approx(1.0)
+    assert info["combat_done_reason"] == "win"
+    env.close()
+
+
+def test_sts2_combat_sparse_loss_is_negative_terminal_reward():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_sparse",
+    )
+    fake_manager = FakeStS2ProcessManager(
+        [_map_decision(), _combat_decision(), _game_over_decision()]
+    )
+    env.process_manager = fake_manager
+    env.reset(seed=123)
+
+    _obs, reward, terminated, truncated, info = env.step(END_TURN_ACTION)
+
+    assert terminated is True
+    assert truncated is False
+    assert reward == pytest.approx(-1.0)
+    assert info["combat_done_reason"] == "loss"
+    env.close()
+
+
+def test_sts2_combat_sparse_does_not_apply_full_run_macro_rewards():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_sparse",
+    )
+    reward_state = _card_reward_decision(
+        floor=17,
+        relics=[{"name": "Burning Blood"}, {"name": "New Relic"}],
+    )
+    fake_manager = FakeStS2ProcessManager([_map_decision(), _combat_decision(), reward_state])
+    env.process_manager = fake_manager
+    env.reset(seed=123)
+    env.last_floor = 1
+    env.last_relic_ids = {"Burning Blood"}
+
+    _obs, reward, terminated, _truncated, info = env.step(END_TURN_ACTION)
+
+    assert terminated is True
+    assert reward == pytest.approx(1.0)
+    assert info["progress_metrics"]["combat_win"] == 1.0
+    env.close()
+
+
+def test_sts2_full_run_combat_reward_behavior_remains_non_terminal():
+    env = SlayTheSpireEnv(game_version=2, sts2_cli_path="fake-sts2-cli")
+    env.current_state = normalize_sts2_state(_combat_decision())
+    env.process_manager = FakeStS2ProcessManager([_card_reward_decision()])
+    env.last_in_combat = True
+    env.last_monster_total_hp = 55
+    env.last_player_hp = 70
+    env.last_floor = 1
+    env.last_relic_ids = {"Burning Blood"}
+    env.last_deck_size = 1
+    env.last_upgraded_cards = 0
+    env.last_act = 1
+
+    _obs, reward, terminated, truncated, _info = env.step(END_TURN_ACTION)
+
+    assert terminated is False
+    assert truncated is False
+    assert reward > 1.0
     env.close()
 
 
