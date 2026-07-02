@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Any
 
+import numpy as np
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -22,10 +24,12 @@ from engine_factory import normalize_game_version
 from rllib.env_wrapper import (
     DEFAULT_RLLIB_BASE_PORT,
     RLLIB_ENV_NAME,
+    make_sts_rllib_env,
     register_rllib_env,
 )
 from rllib.sb3_transfer import try_transfer_sb3_policy
 from rllib.smoke_env import RLLIB_SMOKE_ENV_NAME, register_smoke_env
+from sts2.encounters import combat_pool_names
 
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -92,7 +96,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sts2-combat-encounter",
         default="SHRINKER_BEETLE_WEAK",
-        help="Encounter id used by --sts2-curriculum-mode combat.",
+        help="Encounter id used by --sts2-curriculum-mode combat when the pool is fixed.",
+    )
+    parser.add_argument(
+        "--sts2-combat-enemy-pool",
+        choices=list(combat_pool_names()),
+        default="fixed",
+        help=(
+            "Real encounter sampling pool for --sts2-curriculum-mode combat. "
+            "Use fixed for --sts2-combat-encounter smoke tests."
+        ),
     )
     parser.add_argument(
         "--sts2-combat-damage-reward-scale",
@@ -117,6 +130,23 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Log detailed combat decisions for the first N STS2 episodes per worker.",
+    )
+    parser.add_argument(
+        "--eval-random-baseline",
+        type=int,
+        default=0,
+        help="Run N random valid-action combat episodes on the selected STS2 combat pool.",
+    )
+    parser.add_argument(
+        "--eval-combat-episodes",
+        type=int,
+        default=0,
+        help="Run N policy evaluation combat episodes after each training iteration.",
+    )
+    parser.add_argument(
+        "--eval-combat-deterministic",
+        action="store_true",
+        help="Use explore=False for --eval-combat-episodes.",
     )
     parser.add_argument(
         "--sts2-capture-stderr",
@@ -344,11 +374,12 @@ def main() -> None:
             max(1, int(args.heuristic_top_k)),
         )
         logger.info(
-            "STS2 curriculum: mode=%s reward_mode=%s room_type=%s encounter=%s",
+            "STS2 curriculum: mode=%s reward_mode=%s room_type=%s encounter=%s combat_enemy_pool=%s",
             args.sts2_curriculum_mode,
             args.sts2_reward_mode,
             args.sts2_combat_room_type,
             args.sts2_combat_encounter,
+            args.sts2_combat_enemy_pool,
         )
     _warn_if_worker_count_is_aggressive(args, game_key, logger)
 
@@ -388,6 +419,7 @@ def main() -> None:
             "sts2_reward_mode": args.sts2_reward_mode,
             "sts2_combat_room_type": args.sts2_combat_room_type,
             "sts2_combat_encounter": args.sts2_combat_encounter,
+            "sts2_combat_enemy_pool": args.sts2_combat_enemy_pool,
             "sts2_combat_damage_reward_scale": args.sts2_combat_damage_reward_scale,
             "sts2_combat_hp_loss_reward_scale": args.sts2_combat_hp_loss_reward_scale,
             "sts2_combat_action_penalty": args.sts2_combat_action_penalty,
@@ -431,6 +463,13 @@ def main() -> None:
             try_transfer_sb3_policy(algo, args.init_from_sb3, logger)
         elif args.init_from_sb3:
             logger.info("Ignoring --init-from-sb3 because an RLlib checkpoint was restored.")
+
+        if game_key == "sts2" and not args.smoke_test and args.eval_random_baseline > 0:
+            _run_random_combat_baseline(
+                env_config=env_config,
+                episodes=args.eval_random_baseline,
+                logger=logger,
+            )
 
         target_steps = current_steps + args.timesteps
         while current_steps < target_steps:
@@ -497,6 +536,14 @@ def main() -> None:
                     ),
                     iteration_seconds,
                     step_delta,
+                )
+            if game_key == "sts2" and not args.smoke_test and args.eval_combat_episodes > 0:
+                _run_policy_combat_eval(
+                    algo=algo,
+                    env_config=env_config,
+                    episodes=args.eval_combat_episodes,
+                    deterministic=bool(args.eval_combat_deterministic),
+                    logger=logger,
                 )
             iteration = int(result.get("training_iteration", 0) or 0)
             if args.checkpoint_freq > 0 and iteration % args.checkpoint_freq == 0:
@@ -744,6 +791,7 @@ def _checkpoint_metadata_payload(
                 "sts2_combat_encounter",
                 "SHRINKER_BEETLE_WEAK",
             ),
+            "sts2_combat_enemy_pool": getattr(args, "sts2_combat_enemy_pool", "fixed"),
             "sts2_combat_damage_reward_scale": float(
                 getattr(args, "sts2_combat_damage_reward_scale", 0.01) or 0.01
             ),
@@ -992,6 +1040,204 @@ def _result_env_steps(result: dict[str, Any], fallback: int) -> int:
     return fallback
 
 
+def _run_random_combat_baseline(
+    *,
+    env_config: dict[str, Any],
+    episodes: int,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    rng = np.random.default_rng(12345)
+
+    def select_random_action(observation: dict[str, Any]) -> int:
+        mask = np.asarray(observation.get("action_mask", []), dtype=np.float32)
+        valid = np.flatnonzero(mask > 0.0)
+        if len(valid) == 0:
+            return 0
+        return int(rng.choice(valid))
+
+    metrics = _run_manual_combat_eval(
+        env_config=env_config,
+        episodes=episodes,
+        worker_id=900001,
+        action_selector=select_random_action,
+    )
+    logger.info(
+        (
+            "Random combat baseline: episodes=%d random_combat_win_rate=%s "
+            "random_avg_combat_steps=%s random_avg_hp_lost=%s "
+            "random_win_rate_by_encounter=%s"
+        ),
+        episodes,
+        _format_metric(metrics["combat_win_rate"]),
+        _format_metric(metrics["avg_combat_steps"]),
+        _format_metric(metrics["avg_hp_lost"]),
+        metrics["win_rate_by_encounter"],
+    )
+    return metrics
+
+
+def _run_policy_combat_eval(
+    *,
+    algo: Any,
+    env_config: dict[str, Any],
+    episodes: int,
+    deterministic: bool,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    def select_policy_action(observation: dict[str, Any]) -> int:
+        try:
+            result = algo.compute_single_action(
+                observation,
+                explore=not deterministic,
+            )
+        except TypeError:
+            result = algo.compute_single_action(observation)
+        if isinstance(result, tuple):
+            result = result[0]
+        if isinstance(result, np.ndarray):
+            return int(result.item() if result.shape == () else result[0])
+        return int(result)
+
+    metrics = _run_manual_combat_eval(
+        env_config=env_config,
+        episodes=episodes,
+        worker_id=900002,
+        action_selector=select_policy_action,
+    )
+    logger.info(
+        (
+            "PPO combat eval: episodes=%d deterministic=%s eval_combat_win_rate=%s "
+            "eval_avg_combat_steps=%s eval_avg_hp_lost=%s "
+            "eval_win_rate_by_encounter=%s eval_avg_hp_lost_by_encounter=%s "
+            "eval_avg_steps_by_encounter=%s"
+        ),
+        episodes,
+        bool(deterministic),
+        _format_metric(metrics["combat_win_rate"]),
+        _format_metric(metrics["avg_combat_steps"]),
+        _format_metric(metrics["avg_hp_lost"]),
+        metrics["win_rate_by_encounter"],
+        metrics["avg_hp_lost_by_encounter"],
+        metrics["avg_steps_by_encounter"],
+    )
+    return metrics
+
+
+def _run_manual_combat_eval(
+    *,
+    env_config: dict[str, Any],
+    episodes: int,
+    worker_id: int,
+    action_selector: Any,
+) -> dict[str, Any]:
+    config = dict(env_config)
+    config["worker_id"] = worker_id
+    config["sts2_curriculum_mode"] = "combat"
+    if config.get("sts2_reward_mode") == "full_v3_2":
+        config["sts2_reward_mode"] = "combat_sparse"
+    config["debug_env_info"] = False
+    env = make_sts_rllib_env(config)
+    stats = _new_combat_eval_stats()
+    try:
+        for _episode_index in range(max(0, int(episodes))):
+            observation, info = env.reset()
+            final_info = info
+            terminated = False
+            truncated = False
+            guard = 0
+            while not (terminated or truncated):
+                action = int(action_selector(observation))
+                observation, _reward, terminated, truncated, info = env.step(action)
+                final_info = info
+                guard += 1
+                if guard > 1000:
+                    final_info = dict(final_info or {})
+                    final_info["combat_done_reason"] = "timeout"
+                    break
+            _record_combat_eval_episode(stats, final_info)
+    finally:
+        env.close()
+    return _finalize_combat_eval_stats(stats)
+
+
+def _new_combat_eval_stats() -> dict[str, Any]:
+    return {
+        "episodes": 0,
+        "wins": 0.0,
+        "losses": 0.0,
+        "timeouts": 0.0,
+        "steps": 0.0,
+        "hp_lost": 0.0,
+        "by_encounter": {},
+    }
+
+
+def _record_combat_eval_episode(stats: dict[str, Any], info: Any) -> None:
+    progress = {}
+    if isinstance(info, dict) and isinstance(info.get("progress_metrics"), dict):
+        progress = info["progress_metrics"]
+    reason = str(progress.get("terminated_reason") or "").strip().lower()
+    if not reason and isinstance(info, dict):
+        reason = str(info.get("combat_done_reason") or "").strip().lower()
+    reason = reason or "unknown"
+    encounter = str(progress.get("encounter_id") or "unknown")
+    steps = _safe_number(progress.get("combat_steps"))
+    hp_lost = _safe_number(progress.get("hp_lost"))
+
+    stats["episodes"] += 1
+    stats["wins"] += float(reason == "win")
+    stats["losses"] += float(reason == "loss")
+    stats["timeouts"] += float(reason == "timeout")
+    stats["steps"] += steps
+    stats["hp_lost"] += hp_lost
+
+    by_encounter = stats["by_encounter"].setdefault(
+        encounter,
+        {"episodes": 0, "wins": 0.0, "steps": 0.0, "hp_lost": 0.0},
+    )
+    by_encounter["episodes"] += 1
+    by_encounter["wins"] += float(reason == "win")
+    by_encounter["steps"] += steps
+    by_encounter["hp_lost"] += hp_lost
+
+
+def _finalize_combat_eval_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    episodes = max(1, int(stats["episodes"]))
+    return {
+        "episodes": int(stats["episodes"]),
+        "combat_win_rate": float(stats["wins"]) / episodes,
+        "combat_loss_rate": float(stats["losses"]) / episodes,
+        "combat_timeout_rate": float(stats["timeouts"]) / episodes,
+        "avg_combat_steps": float(stats["steps"]) / episodes,
+        "avg_hp_lost": float(stats["hp_lost"]) / episodes,
+        "win_rate_by_encounter": _format_by_encounter(stats, "wins", "episodes"),
+        "avg_hp_lost_by_encounter": _format_by_encounter(stats, "hp_lost", "episodes"),
+        "avg_steps_by_encounter": _format_by_encounter(stats, "steps", "episodes"),
+    }
+
+
+def _format_by_encounter(
+    stats: dict[str, Any],
+    numerator_key: str,
+    denominator_key: str,
+) -> str:
+    items: list[str] = []
+    for encounter, values in sorted(stats["by_encounter"].items()):
+        denominator = max(1, int(values.get(denominator_key, 0)))
+        value = float(values.get(numerator_key, 0.0)) / denominator
+        items.append(f"{encounter}:{value:.2f}")
+    return ",".join(items) if items else "n/a"
+
+
+def _safe_number(value: Any) -> float:
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _result_env_step_delta(
     result: dict[str, Any],
     *,
@@ -1085,6 +1331,11 @@ def _prefixed_custom_metrics(result: dict[str, Any], prefix: str) -> str:
             label = label[: -len(suffix)]
             if label in seen:
                 continue
+            try:
+                if float(value) <= 0.0:
+                    continue
+            except (TypeError, ValueError):
+                pass
             seen.add(label)
             items.append(f"{label}:{_format_metric(value)}")
     return ",".join(items) if items else "n/a"

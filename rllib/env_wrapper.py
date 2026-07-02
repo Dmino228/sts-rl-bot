@@ -254,6 +254,9 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_combat_encounter=str(
             _config_value(env_config, "sts2_combat_encounter", "SHRINKER_BEETLE_WEAK")
         ),
+        sts2_combat_enemy_pool=str(
+            _config_value(env_config, "sts2_combat_enemy_pool", "fixed")
+        ),
         sts2_combat_damage_reward_scale=float(
             _config_value(env_config, "sts2_combat_damage_reward_scale", 0.01)
         ),

@@ -560,6 +560,30 @@ def test_env_reset_sts2_combat_curriculum_enters_encounter():
     env.close()
 
 
+def test_env_reset_sts2_combat_curriculum_samples_enemy_pool():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_combat_enemy_pool="act1_boss",
+    )
+    fake_manager = FakeStS2ProcessManager([_map_decision(), _combat_decision()])
+    env.process_manager = fake_manager
+
+    _obs, info = env.reset(seed=123)
+    encounter = fake_manager.sent[1]["encounter"]
+
+    assert fake_manager.sent[1]["cmd"] == "enter_room"
+    assert fake_manager.sent[1]["type"] == "combat"
+    assert encounter in {
+        "CEREMONIAL_BEAST_BOSS",
+        "THE_KIN_BOSS",
+        "VANTOM_BOSS",
+    }
+    assert info["progress_metrics"]["encounter_id"] == encounter
+    env.close()
+
+
 def test_sts2_combat_sparse_win_terminates_after_combat_reward():
     env = SlayTheSpireEnv(
         game_version=2,

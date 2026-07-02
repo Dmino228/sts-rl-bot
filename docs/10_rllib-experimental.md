@@ -69,9 +69,16 @@ start_run -> enter_room(type="combat", encounter="<id>")
 ```
 
 The first exposed selector is `--sts2-combat-encounter`, defaulting to
-`SHRINKER_BEETLE_WEAK`. This is deliberately narrower than the final C0/C1
-curriculum plan; randomized Act 1 pools and controlled deck mutation should be
-added after the single-encounter path is verified.
+`SHRINKER_BEETLE_WEAK`. This fixed encounter is only a C0a smoke test.
+Meaningful combat curriculum runs should use `--sts2-combat-enemy-pool`, which
+samples a fresh encounter on every reset:
+
+- `fixed`
+- `act1_hallway`
+- `act1_elite`
+- `act1_boss`
+- `act1_hallway_elite`
+- `act1_mixed`
 
 Combat curriculum semantics are intentionally different from full-run training:
 one episode is exactly one fight. The episode terminates on combat win, loss, or

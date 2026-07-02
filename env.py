@@ -7,6 +7,7 @@ import sys
 from typing import Optional, Tuple, Dict, Any, List
 
 from engine_factory import create_game_engine
+from sts2.encounters import combat_pool_ids
 
 
 # V3.2 reward constants
@@ -67,6 +68,7 @@ class SlayTheSpireEnv(gym.Env):
         sts2_reward_mode: str = "full_v3_2",
         sts2_combat_room_type: str = "combat",
         sts2_combat_encounter: str = "SHRINKER_BEETLE_WEAK",
+        sts2_combat_enemy_pool: str = "fixed",
         sts2_combat_damage_reward_scale: float = 0.01,
         sts2_combat_hp_loss_reward_scale: float = 0.01,
         sts2_combat_action_penalty: float = 0.001,
@@ -139,6 +141,12 @@ class SlayTheSpireEnv(gym.Env):
         self.sts2_reward_mode = sts2_reward_mode.strip().lower()
         self.sts2_combat_room_type = sts2_combat_room_type
         self.sts2_combat_encounter = sts2_combat_encounter
+        self.sts2_combat_enemy_pool = sts2_combat_enemy_pool.strip().lower()
+        self._combat_encounter_pool = combat_pool_ids(
+            self.sts2_combat_enemy_pool,
+            fixed_encounter=self.sts2_combat_encounter,
+        )
+        self._current_combat_encounter = self._combat_encounter_pool[0]
         self.sts2_combat_damage_reward_scale = float(sts2_combat_damage_reward_scale)
         self.sts2_combat_hp_loss_reward_scale = float(sts2_combat_hp_loss_reward_scale)
         self.sts2_combat_action_penalty = float(sts2_combat_action_penalty)
@@ -293,7 +301,8 @@ class SlayTheSpireEnv(gym.Env):
         if self.game_version == "sts2":
             reset_options.setdefault("curriculum_mode", self.sts2_curriculum_mode)
             reset_options.setdefault("combat_room_type", self.sts2_combat_room_type)
-            reset_options.setdefault("combat_encounter", self.sts2_combat_encounter)
+            reset_options.setdefault("combat_encounter", self._select_combat_encounter())
+            self._current_combat_encounter = str(reset_options["combat_encounter"])
         return reset_options
 
     def step(
@@ -794,6 +803,16 @@ class SlayTheSpireEnv(gym.Env):
     def _is_combat_curriculum(self) -> bool:
         return self.game_version == "sts2" and self.sts2_curriculum_mode == "combat"
 
+    def _select_combat_encounter(self) -> str:
+        if not self._is_combat_curriculum():
+            return self.sts2_combat_encounter
+        if len(self._combat_encounter_pool) == 1:
+            self._current_combat_encounter = self._combat_encounter_pool[0]
+            return self._current_combat_encounter
+        index = int(self.np_random.integers(0, len(self._combat_encounter_pool)))
+        self._current_combat_encounter = self._combat_encounter_pool[index]
+        return self._current_combat_encounter
+
     def _uses_combat_reward_mode(self) -> bool:
         return self._is_combat_curriculum() and self.sts2_reward_mode in {
             "combat_sparse",
@@ -920,7 +939,9 @@ class SlayTheSpireEnv(gym.Env):
             "hp_remaining_on_win": float(current_hp or 0) if reason == "win" else 0.0,
             "hp_lost": hp_lost,
             "monster_hp_remaining_on_loss": float(monster_hp) if reason == "loss" else 0.0,
-            "encounter_id": self.sts2_combat_encounter,
+            "encounter_id": self._current_combat_encounter,
+            "encounter_pool": self.sts2_combat_enemy_pool,
+            "encounter_pool_ids": list(self._combat_encounter_pool),
             "terminated_reason": reason,
         }
 
@@ -944,7 +965,7 @@ class SlayTheSpireEnv(gym.Env):
         print(
             "[STS2 COMBAT DEBUG] "
             f"worker={self.worker_id} episode={self._episode_index} "
-            f"encounter={self.sts2_combat_encounter} step={self.combat_step_count} "
+            f"encounter={self._current_combat_encounter} step={self.combat_step_count} "
             f"hp={player.get('current_hp', game_state.get('current_hp'))} "
             f"block={player.get('block')} energy={player.get('energy')} "
             f"hand={[card.get('name', card.get('id')) for card in hand if isinstance(card, dict)]} "

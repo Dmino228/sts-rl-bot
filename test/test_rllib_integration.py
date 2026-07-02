@@ -224,6 +224,7 @@ def test_checkpoint_metadata_payload_records_curriculum_fields(tmp_path):
         sts2_curriculum_mode="combat",
         sts2_combat_room_type="combat",
         sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        sts2_combat_enemy_pool="act1_hallway",
         sts2_recycle_every_episodes=250,
         sts2_recycle_every_steps=0,
         sts2_recycle_rss_mb=768.0,
@@ -249,6 +250,7 @@ def test_checkpoint_metadata_payload_records_curriculum_fields(tmp_path):
     assert payload["training"]["workers"] == 8
     assert payload["engine"]["sts2_curriculum_mode"] == "combat"
     assert payload["engine"]["sts2_combat_encounter"] == "SHRINKER_BEETLE_WEAK"
+    assert payload["engine"]["sts2_combat_enemy_pool"] == "act1_hallway"
     assert payload["engine"]["sts2_recycle_rss_mb"] == 768.0
 
 
@@ -278,6 +280,7 @@ def test_write_checkpoint_metadata_places_json_next_to_checkpoint(tmp_path):
         sts2_curriculum_mode="full_run",
         sts2_combat_room_type="combat",
         sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        sts2_combat_enemy_pool="fixed",
         sts2_recycle_every_episodes=0,
         sts2_recycle_every_steps=0,
         sts2_recycle_rss_mb=0.0,
@@ -456,6 +459,7 @@ def test_progress_metrics_callback_aggregates_combat_info():
             "hp_lost": 8,
             "monster_hp_remaining_on_loss": 0,
             "encounter_id": "SHRINKER_BEETLE_WEAK",
+            "encounter_pool_ids": ["SHRINKER_BEETLE_WEAK", "FLYCONID_WEAK"],
             "terminated_reason": "win",
         }
     }
@@ -469,7 +473,10 @@ def test_progress_metrics_callback_aggregates_combat_info():
     assert episode.custom_metrics["avg_hp_lost"] == 8.0
     assert episode.custom_metrics["avg_monster_hp_remaining_on_loss"] == 0.0
     assert episode.custom_metrics["encounter_id_SHRINKER_BEETLE_WEAK"] == 1.0
+    assert episode.custom_metrics["encounter_id_FLYCONID_WEAK"] == 0.0
     assert episode.custom_metrics["terminated_reason_win"] == 1.0
+    assert episode.custom_metrics["terminated_reason_loss"] == 0.0
+    assert episode.custom_metrics["terminated_reason_timeout"] == 0.0
 
 
 def test_train_rllib_progress_log_metrics_reads_custom_metrics():
@@ -523,6 +530,75 @@ def test_train_rllib_combat_log_metrics_reads_custom_metrics():
     assert metrics["terminated_reasons"] == "win:3.00"
 
 
+def test_sts2_combat_enemy_pools_include_act1_groups():
+    from sts2.encounters import combat_pool_ids
+
+    hallway = set(combat_pool_ids("act1_hallway"))
+    elites = set(combat_pool_ids("act1_elite"))
+    bosses = set(combat_pool_ids("act1_boss"))
+    hallway_elite = set(combat_pool_ids("act1_hallway_elite"))
+    mixed = list(combat_pool_ids("act1_mixed"))
+
+    assert "SHRINKER_BEETLE_WEAK" in hallway
+    assert "ENTOMANCER_ELITE" in elites
+    assert "THE_KIN_BOSS" in bosses
+    assert hallway.issubset(hallway_elite)
+    assert elites.issubset(hallway_elite)
+    assert bosses.isdisjoint(hallway_elite)
+    assert hallway.issubset(set(mixed))
+    assert elites.issubset(set(mixed))
+    assert bosses.issubset(set(mixed))
+    assert mixed.count("SHRINKER_BEETLE_WEAK") == 2
+
+
+def test_train_rllib_manual_combat_eval_stats_by_encounter():
+    from rllib import train_rllib
+
+    stats = train_rllib._new_combat_eval_stats()
+    train_rllib._record_combat_eval_episode(
+        stats,
+        {
+            "progress_metrics": {
+                "terminated_reason": "win",
+                "encounter_id": "A",
+                "combat_steps": 10,
+                "hp_lost": 3,
+            }
+        },
+    )
+    train_rllib._record_combat_eval_episode(
+        stats,
+        {
+            "progress_metrics": {
+                "terminated_reason": "loss",
+                "encounter_id": "A",
+                "combat_steps": 20,
+                "hp_lost": 15,
+            }
+        },
+    )
+    train_rllib._record_combat_eval_episode(
+        stats,
+        {
+            "progress_metrics": {
+                "terminated_reason": "win",
+                "encounter_id": "B",
+                "combat_steps": 8,
+                "hp_lost": 1,
+            }
+        },
+    )
+
+    metrics = train_rllib._finalize_combat_eval_stats(stats)
+
+    assert metrics["combat_win_rate"] == pytest.approx(2 / 3)
+    assert metrics["combat_loss_rate"] == pytest.approx(1 / 3)
+    assert metrics["avg_combat_steps"] == pytest.approx(38 / 3)
+    assert metrics["avg_hp_lost"] == pytest.approx(19 / 3)
+    assert metrics["win_rate_by_encounter"] == "A:0.50,B:1.00"
+    assert metrics["avg_hp_lost_by_encounter"] == "A:9.00,B:1.00"
+
+
 def test_result_env_step_delta_prefers_this_iter_metric():
     from rllib import train_rllib
 
@@ -558,6 +634,7 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "sts2_reward_mode": "combat_sparse",
             "sts2_combat_room_type": "elite",
             "sts2_combat_encounter": "SHRINKER_BEETLE_WEAK",
+            "sts2_combat_enemy_pool": "act1_elite",
             "sts2_combat_damage_reward_scale": 0.02,
             "sts2_combat_hp_loss_reward_scale": 0.03,
             "sts2_combat_action_penalty": 0.004,
@@ -574,6 +651,7 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
     assert captured_kwargs["sts2_reward_mode"] == "combat_sparse"
     assert captured_kwargs["sts2_combat_room_type"] == "elite"
     assert captured_kwargs["sts2_combat_encounter"] == "SHRINKER_BEETLE_WEAK"
+    assert captured_kwargs["sts2_combat_enemy_pool"] == "act1_elite"
     assert captured_kwargs["sts2_combat_damage_reward_scale"] == 0.02
     assert captured_kwargs["sts2_combat_hp_loss_reward_scale"] == 0.03
     assert captured_kwargs["sts2_combat_action_penalty"] == 0.004

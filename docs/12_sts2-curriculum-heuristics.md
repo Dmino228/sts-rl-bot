@@ -84,7 +84,7 @@ python rllib\train_rllib.py `
   --enemy-pool act1 `
   --sts2-curriculum-mode combat `
   --sts2-reward-mode combat_sparse `
-  --sts2-combat-encounter SHRINKER_BEETLE_WEAK
+  --sts2-combat-enemy-pool act1_hallway
 ```
 
 In combat curriculum mode one episode is exactly one fight. The episode
@@ -107,10 +107,28 @@ Debugging:
 
 logs detailed per-step combat state for the first N episodes per worker.
 
-It does not yet implement the full Act 1 randomized enemy pool, deck
-randomization, or per-character C1/C2 schedules. It is the first integration
-point for validating combat-only PPO on the real headless engine before adding
-more curriculum breadth.
+Encounter pools:
+
+- `fixed`: use `--sts2-combat-encounter`; C0a smoke tests only.
+- `act1_hallway`: sampled Act 1 hallway combats.
+- `act1_elite`: sampled Act 1 elites.
+- `act1_boss`: sampled Act 1 bosses observed from `get_map`.
+- `act1_hallway_elite`: hallway-heavy pool with elites, for C0c.
+- `act1_mixed`: hallway-heavy mix with elites and bosses.
+
+Benchmark helpers:
+
+```powershell
+--eval-random-baseline 500 `
+--eval-combat-episodes 500 `
+--eval-combat-deterministic
+```
+
+The random baseline uses valid random actions on the same pool. PPO combat eval
+runs outside the training sampler and logs per-encounter win rate, HP lost, and
+combat steps.
+
+Deck randomization and per-character C1/C2 schedules are still later stages.
 
 ## Integration Options
 

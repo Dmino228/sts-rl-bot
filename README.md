@@ -158,8 +158,8 @@ learning strategic choices directly.
 The recycle limits are checked between runs, during `reset()`. Set any recycle
 limit to `0` to disable it.
 
-For the first combat-only curriculum smoke runs, keep the normal StS2 launch
-arguments and add the curriculum labels:
+For combat-only curriculum runs, keep the normal StS2 launch arguments and add
+the curriculum labels:
 
 ```powershell
 python rllib\train_rllib.py `
@@ -178,7 +178,10 @@ python rllib\train_rllib.py `
   --enemy-pool act1 `
   --sts2-curriculum-mode combat `
   --sts2-reward-mode combat_sparse `
-  --sts2-combat-encounter SHRINKER_BEETLE_WEAK
+  --sts2-combat-enemy-pool act1_hallway `
+  --eval-random-baseline 500 `
+  --eval-combat-episodes 500 `
+  --eval-combat-deterministic
 ```
 
 This still uses the official `Sts2Headless` engine. It starts a normal run, then
@@ -186,8 +189,14 @@ uses the headless JSON command `enter_room` to jump into one combat encounter.
 In `combat` curriculum mode the episode ends as soon as that fight is won, lost,
 or times out. `combat_sparse` gives `+1` for a win, `-1` for a loss/timeout, and
 `0` for intermediate combat steps. `combat_dense` keeps the same terminal
-signals and adds small configurable damage/hp/action shaping. The broader Act 1
-enemy pool and deck randomization are planned follow-ups.
+signals and adds small configurable damage/hp/action shaping.
+
+`--sts2-combat-enemy-pool fixed` with `--sts2-combat-encounter
+SHRINKER_BEETLE_WEAK` is now only the C0a smoke test. Use `act1_hallway`,
+`act1_hallway_elite`, `act1_elite`, `act1_boss`, or `act1_mixed` for meaningful
+combat benchmarks.
+The random baseline and PPO eval run outside the RLlib training sampler and log
+per-encounter win rates, HP lost, and combat steps on the same pool.
 
 ### StS1 RLlib Training
 

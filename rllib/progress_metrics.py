@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sts2.encounters import known_combat_encounter_ids
+
 try:
     from ray.rllib.algorithms.callbacks import DefaultCallbacks
 except ImportError:  # pragma: no cover - older Ray fallback
@@ -70,10 +72,19 @@ class ProgressMetricsCallback(DefaultCallbacks):
             )
             encounter = _metric_key(combat.get("encounter_id"))
             reason = _metric_key(combat.get("terminated_reason"))
-            if encounter:
-                episode.custom_metrics[f"encounter_id_{encounter}"] = 1.0
-            if reason:
-                episode.custom_metrics[f"terminated_reason_{reason}"] = 1.0
+            pool_ids = combat.get("encounter_pool_ids")
+            if not isinstance(pool_ids, list) or not pool_ids:
+                pool_ids = list(known_combat_encounter_ids())
+            for known_encounter in pool_ids:
+                known_key = _metric_key(known_encounter)
+                if known_key:
+                    episode.custom_metrics[f"encounter_id_{known_key}"] = float(
+                        known_key == encounter
+                    )
+            for known_reason in ("win", "loss", "timeout", "ongoing"):
+                episode.custom_metrics[f"terminated_reason_{known_reason}"] = float(
+                    known_reason == reason
+                )
 
     @staticmethod
     def _record_progress(episode: Any, info: Any) -> None:
@@ -103,6 +114,8 @@ class ProgressMetricsCallback(DefaultCallbacks):
             "hp_lost",
             "monster_hp_remaining_on_loss",
             "encounter_id",
+            "encounter_pool",
+            "encounter_pool_ids",
             "terminated_reason",
         )
         if any(key in progress for key in combat_keys):
