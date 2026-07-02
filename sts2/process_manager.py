@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -75,6 +76,15 @@ class StS2CliProcessManager:
 
         cmd = [self.cli_path, *self.cli_args]
         cwd = self._resolve_process_cwd()
+        executable = _resolve_executable_path(self.cli_path, cwd)
+        if not executable:
+            raise FileNotFoundError(
+                "STS2 executable not found: "
+                f"cli_path={self.cli_path!r} cwd={cwd!r}. "
+                "Pass --sts2-cli-path dotnet with the required --sts2-cli-arg values, "
+                "or pass an absolute path to Sts2Headless.exe."
+            )
+        cmd[0] = executable
         logger.info("[STS2] Starting sts2-cli: %s", " ".join(cmd))
         self._proc = subprocess.Popen(
             cmd,
@@ -435,3 +445,27 @@ def _procfs_process_rss_mb(pid: int) -> Optional[float]:
         return float(rss_pages * page_size) / (1024.0 * 1024.0)
     except (OSError, ValueError, AttributeError):
         return None
+
+
+def _resolve_executable_path(cli_path: str, cwd: Optional[str] = None) -> str:
+    candidate = str(cli_path or "").strip()
+    if not candidate:
+        return ""
+
+    if os.path.isabs(candidate) or os.path.dirname(candidate):
+        paths = [candidate]
+        if cwd and not os.path.isabs(candidate):
+            paths.insert(0, os.path.join(cwd, candidate))
+        for path in paths:
+            absolute = os.path.abspath(path)
+            if os.path.isfile(absolute):
+                return absolute
+        return ""
+
+    if cwd:
+        cwd_candidate = os.path.abspath(os.path.join(cwd, candidate))
+        if os.path.isfile(cwd_candidate):
+            return cwd_candidate
+
+    found = shutil.which(candidate)
+    return found or ""

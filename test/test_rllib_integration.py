@@ -304,6 +304,15 @@ def test_write_checkpoint_metadata_places_json_next_to_checkpoint(tmp_path):
     )
 
 
+def test_train_rllib_resolves_executable_from_path(tmp_path):
+    from rllib import train_rllib
+
+    tool = tmp_path / "Sts2Headless.exe"
+    tool.write_text("", encoding="utf-8")
+
+    assert train_rllib._resolve_executable_path(str(tool)) == str(tool)
+
+
 def test_train_rllib_resolves_sts2_timeout_defaults():
     from rllib import train_rllib
 

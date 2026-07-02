@@ -59,15 +59,31 @@ Useful flags:
 The first STS2 curriculum profile is intentionally small and disabled by
 default:
 
-```powershell
---sts2-curriculum-mode combat `
---sts2-combat-encounter SHRINKER_BEETLE_WEAK
-```
-
 This uses the official `Sts2Headless` JSON protocol:
 
 ```text
 start_run -> enter_room(type="combat", encounter="<id>")
+```
+
+Example:
+
+```powershell
+python rllib\train_rllib.py `
+  --game-version 2 `
+  --sts2-cli-path dotnet `
+  --sts2-cli-cwd C:\dev\sts2-cli `
+  --sts2-cli-arg=run `
+  --sts2-cli-arg=--no-build `
+  --sts2-cli-arg=--project `
+  --sts2-cli-arg=C:\dev\sts2-cli\src\Sts2Headless\Sts2Headless.csproj `
+  --workers 8 `
+  --envs-per-worker 1 `
+  --character Ironclad `
+  --training-stage combat_c0_ironclad_starter_act1 `
+  --deck-mode starter `
+  --enemy-pool act1 `
+  --sts2-curriculum-mode combat `
+  --sts2-combat-encounter SHRINKER_BEETLE_WEAK
 ```
 
 It does not yet implement the full Act 1 randomized enemy pool, deck

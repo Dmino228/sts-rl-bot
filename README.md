@@ -158,14 +158,26 @@ learning strategic choices directly.
 The recycle limits are checked between runs, during `reset()`. Set any recycle
 limit to `0` to disable it.
 
-For the first combat-only curriculum smoke runs, add:
+For the first combat-only curriculum smoke runs, keep the normal StS2 launch
+arguments and add the curriculum labels:
 
 ```powershell
---training-stage combat_c0_ironclad_starter_act1 `
---deck-mode starter `
---enemy-pool act1 `
---sts2-curriculum-mode combat `
---sts2-combat-encounter SHRINKER_BEETLE_WEAK
+python rllib\train_rllib.py `
+  --game-version 2 `
+  --sts2-cli-path dotnet `
+  --sts2-cli-cwd C:\dev\sts2-cli `
+  --sts2-cli-arg=run `
+  --sts2-cli-arg=--no-build `
+  --sts2-cli-arg=--project `
+  --sts2-cli-arg=C:\dev\sts2-cli\src\Sts2Headless\Sts2Headless.csproj `
+  --workers 8 `
+  --envs-per-worker 1 `
+  --character Ironclad `
+  --training-stage combat_c0_ironclad_starter_act1 `
+  --deck-mode starter `
+  --enemy-pool act1 `
+  --sts2-curriculum-mode combat `
+  --sts2-combat-encounter SHRINKER_BEETLE_WEAK
 ```
 
 This still uses the official `Sts2Headless` engine. It starts a normal run, then

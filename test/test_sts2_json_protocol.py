@@ -550,6 +550,15 @@ def test_sts2_process_manager_infers_cwd_from_csproj_global_json(tmp_path):
     assert manager._resolve_process_cwd() == str(repo)
 
 
+def test_sts2_process_manager_resolves_executable_relative_to_cwd(tmp_path):
+    from sts2.process_manager import _resolve_executable_path
+
+    tool = tmp_path / "Sts2Headless.exe"
+    tool.write_text("", encoding="utf-8")
+
+    assert _resolve_executable_path("Sts2Headless.exe", str(tmp_path)) == str(tool)
+
+
 def test_sts2_process_manager_timeout_message_includes_last_command(tmp_path):
     manager = StS2CliProcessManager(
         timeout=3.0,

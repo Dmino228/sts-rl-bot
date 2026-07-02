@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -282,6 +283,7 @@ def main() -> None:
     args.sts2_recycle_rss_mb = _resolve_sts2_recycle_rss_mb(args, game_key)
     checkpoint_dir = _resolve_checkpoint_dir(args, game_key)
     logger.info("Checkpoint directory: %s", checkpoint_dir)
+    _validate_sts2_launch_config(args, game_key, logger)
     logger.info(
         "Training metadata: stage=%s deck=%s enemy_pool=%s",
         _metadata_training_stage(args, game_key),
@@ -754,6 +756,56 @@ def _source_checkpoint(args: argparse.Namespace, resume_from: str) -> str:
     if init_from_sb3:
         return os.path.abspath(init_from_sb3)
     return ""
+
+
+def _validate_sts2_launch_config(
+    args: argparse.Namespace,
+    game_key: str,
+    logger: logging.Logger,
+) -> None:
+    if game_key != "sts2":
+        return
+
+    cli_path = str(getattr(args, "sts2_cli_path", "") or "")
+    cli_cwd = str(getattr(args, "sts2_cli_cwd", "") or "")
+    resolved = _resolve_executable_path(cli_path, cli_cwd)
+    if resolved:
+        logger.info("STS2 executable resolved: %s", resolved)
+        return
+
+    hint = (
+        "StS2 executable not found before starting Ray workers. "
+        f"--sts2-cli-path={cli_path!r} cwd={cli_cwd!r}. "
+        "Use either an absolute Sts2Headless.exe path, or run through dotnet, e.g. "
+        "--sts2-cli-path dotnet --sts2-cli-cwd C:\\dev\\sts2-cli "
+        "--sts2-cli-arg=run --sts2-cli-arg=--no-build --sts2-cli-arg=--project "
+        "--sts2-cli-arg=C:\\dev\\sts2-cli\\src\\Sts2Headless\\Sts2Headless.csproj"
+    )
+    raise SystemExit(hint)
+
+
+def _resolve_executable_path(cli_path: str, cli_cwd: str = "") -> str:
+    candidate = str(cli_path or "").strip()
+    if not candidate:
+        return ""
+
+    if os.path.isabs(candidate) or os.path.dirname(candidate):
+        paths = [candidate]
+        if cli_cwd and not os.path.isabs(candidate):
+            paths.insert(0, os.path.join(cli_cwd, candidate))
+        for path in paths:
+            absolute = os.path.abspath(path)
+            if os.path.isfile(absolute):
+                return absolute
+        return ""
+
+    if cli_cwd:
+        cwd_candidate = os.path.abspath(os.path.join(cli_cwd, candidate))
+        if os.path.isfile(cwd_candidate):
+            return cwd_candidate
+
+    found = shutil.which(candidate)
+    return found or ""
 
 
 def _resolve_resume_path(args: argparse.Namespace, checkpoint_dir: str) -> str:
