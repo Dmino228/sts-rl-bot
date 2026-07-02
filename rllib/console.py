@@ -171,6 +171,7 @@ class TrainingConsole:
                 BarColumn(bar_width=30),
                 MofNCompleteColumn(),
                 TextColumn("steps"),
+                TextColumn("[green]({task.fields[sps]:.0f} steps/s)"),
                 TimeElapsedColumn(),
                 TextColumn("ETA:"),
                 TimeRemainingColumn(),
@@ -178,6 +179,7 @@ class TrainingConsole:
             self._task_id = self._progress.add_task(
                 "Training",
                 total=self.target_steps if self.target_steps > 0 else None,
+                sps=0.0,
             )
             self._rich_table = self._make_empty_table()
             self._rich_Group = Group
@@ -204,7 +206,7 @@ class TrainingConsole:
         )
         if self.curriculum_mode == "combat":
             for col in [
-                "iter", "steps", "sps", "reward",
+                "iter", "steps", "reward",
                 "train_win", "train_loss", "train_tmout",
                 "avg_hp_lost", "avg_steps",
                 "weak_wr", "normal_wr", "elite_wr", "boss_wr",
@@ -212,7 +214,7 @@ class TrainingConsole:
                 table.add_column(col, justify="right")
         else:
             for col in [
-                "iter", "steps", "sps", "reward",
+                "iter", "steps", "reward",
                 "floor", "max_floor", "boss_r%", "boss_k%", "act2%",
             ]:
                 table.add_column(col, justify="right")
@@ -230,7 +232,7 @@ class TrainingConsole:
         grouped_combat_metrics: dict[str, str] | None,
     ) -> None:
         if self._progress is not None and self._task_id is not None:
-            self._progress.update(self._task_id, completed=current_steps)
+            self._progress.update(self._task_id, completed=current_steps, sps=sps)
 
         from rich.table import Table
         from rich.console import Group
@@ -242,7 +244,6 @@ class TrainingConsole:
             table.add_row(
                 str(iteration),
                 f"{current_steps:,}",
-                f"{sps:.0f}",
                 _fmt(reward_mean),
                 combat_metrics.get("combat_win_rate", "n/a"),
                 combat_metrics.get("combat_loss_rate", "n/a"),
@@ -258,7 +259,6 @@ class TrainingConsole:
             table.add_row(
                 str(iteration),
                 f"{current_steps:,}",
-                f"{sps:.0f}",
                 _fmt(reward_mean),
                 progress_metrics.get("floor_mean", "n/a"),
                 progress_metrics.get("max_floor", "n/a"),

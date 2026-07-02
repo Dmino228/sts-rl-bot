@@ -499,7 +499,7 @@ def _checkpoint_metadata_payload(
         "framework": "RLlib",
         "algorithm": "PPO",
         "game_version": game_key,
-        "training_stage": config.get("_training_stage", ""),
+        "training_stage": config.get("_training_stage") or config.get("training_stage") or "",
         "character": config.get("character", ""),
         "multi_character": bool(config.get("multi_character", False)),
         "deck_mode": config.get("deck_mode", "") or "unspecified",
@@ -511,7 +511,7 @@ def _checkpoint_metadata_payload(
         "heuristic_mode": config.get("heuristic_mode", "none"),
         "heuristic_top_k": max(1, int(config.get("heuristic_top_k", 1) or 1)),
         "seed": config.get("seed"),
-        "preset": config.get("_preset_name", "none"),
+        "preset": config.get("_preset_name") or config.get("preset") or "none",
         "training": {
             "workers": int(config.get("workers", 0) or 0),
             "envs_per_worker": int(config.get("envs_per_worker", 0) or 0),

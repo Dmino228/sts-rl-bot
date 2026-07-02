@@ -448,8 +448,6 @@ def _resolve_sts2_recycle_every_episodes(config: dict[str, Any], game_key: str) 
     val = config.get("sts2_recycle_every_episodes")
     if val is not None:
         return max(0, int(val))
-    if game_key == "sts2":
-        return 250
     return 0
 
 

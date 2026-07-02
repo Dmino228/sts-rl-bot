@@ -123,10 +123,11 @@ class StS2CliProcessManager:
         reason = self._recycle_reason()
         if not reason:
             return False
+        pid = self._proc.pid if self._proc is not None else None
         logger.warning(
-            "[STS2] Recycling sts2-cli before next run: %s diagnostics=%s",
+            "[STS2] Recycling sts2-cli before next run: %s (pid=%s)",
             reason,
-            self.diagnostic_snapshot(),
+            pid,
         )
         self.launch_game()
         self.signal_ready()

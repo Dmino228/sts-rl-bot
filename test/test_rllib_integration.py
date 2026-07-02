@@ -160,19 +160,19 @@ def test_train_rllib_module_imports_without_ray_model_dependency():
 
 
 def test_train_rllib_uses_game_scoped_default_checkpoint_dir(tmp_path, monkeypatch):
-    from rllib import train_rllib
+    from rllib import config
 
-    monkeypatch.setattr(train_rllib, "MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(config, "_MODELS_DIR", str(tmp_path / "models"))
     args = argparse.Namespace(
         smoke_test=False,
         game_version="2",
         checkpoint_dir="",
     )
 
-    game_key = train_rllib._checkpoint_game_key(args)
+    game_key = config._resolve_game_key(vars(args))
 
     assert game_key == "sts2"
-    assert train_rllib._resolve_checkpoint_dir(args, game_key) == os.path.join(
+    assert config._resolve_checkpoint_dir(vars(args), game_key) == os.path.join(
         str(tmp_path / "models"),
         "rllib",
         "sts2",
@@ -180,9 +180,9 @@ def test_train_rllib_uses_game_scoped_default_checkpoint_dir(tmp_path, monkeypat
 
 
 def test_train_rllib_uses_stage_scoped_checkpoint_dir(tmp_path, monkeypatch):
-    from rllib import train_rllib
+    from rllib import config
 
-    monkeypatch.setattr(train_rllib, "MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(config, "_MODELS_DIR", str(tmp_path / "models"))
     args = argparse.Namespace(
         smoke_test=False,
         game_version="2",
@@ -190,9 +190,9 @@ def test_train_rllib_uses_stage_scoped_checkpoint_dir(tmp_path, monkeypatch):
         training_stage="combat_c0_ironclad_starter_act1",
     )
 
-    game_key = train_rllib._checkpoint_game_key(args)
+    game_key = config._resolve_game_key(vars(args))
 
-    assert train_rllib._resolve_checkpoint_dir(args, game_key) == os.path.join(
+    assert config._resolve_checkpoint_dir(vars(args), game_key) == os.path.join(
         str(tmp_path / "models"),
         "rllib",
         "sts2",
@@ -231,7 +231,7 @@ def test_checkpoint_metadata_payload_records_curriculum_fields(tmp_path):
     )
 
     payload = train_rllib._checkpoint_metadata_payload(
-        args,
+        vars(args),
         "sts2",
         total_steps=2_000_000,
         checkpoint_path=str(tmp_path / "checkpoint_000001"),
@@ -288,7 +288,7 @@ def test_write_checkpoint_metadata_places_json_next_to_checkpoint(tmp_path):
 
     metadata_path = train_rllib._write_checkpoint_metadata(
         str(checkpoint_dir),
-        args,
+        vars(args),
         "sts2",
         total_steps=10,
         source_checkpoint=str(tmp_path / "source_checkpoint"),
@@ -308,85 +308,85 @@ def test_write_checkpoint_metadata_places_json_next_to_checkpoint(tmp_path):
 
 
 def test_train_rllib_resolves_executable_from_path(tmp_path):
-    from rllib import train_rllib
+    from rllib import preflight
 
     tool = tmp_path / "Sts2Headless.exe"
     tool.write_text("", encoding="utf-8")
 
-    assert train_rllib._resolve_executable_path(str(tool)) == str(tool)
+    assert preflight._resolve_executable_path(str(tool)) == str(tool)
 
 
 def test_train_rllib_resolves_sts2_timeout_defaults():
-    from rllib import train_rllib
+    from rllib import config
 
-    args = argparse.Namespace(process_timeout_s=None, sample_timeout_s=None)
+    args_dict = {"process_timeout_s": None, "sample_timeout_s": None}
 
-    args.process_timeout_s = train_rllib._resolve_process_timeout(args, "sts2")
+    process_timeout = config._resolve_process_timeout(args_dict, "sts2")
 
-    assert args.process_timeout_s == 30.0
-    assert train_rllib._resolve_sample_timeout(args, "sts2") == 15.0
+    assert process_timeout == 30.0
+    assert config._resolve_sample_timeout(args_dict, "sts2") == 15.0
 
 
 def test_train_rllib_resolves_sts2_recycle_defaults():
-    from rllib import train_rllib
+    from rllib import config
 
-    args = argparse.Namespace(
-        sts2_recycle_every_episodes=None,
-        sts2_recycle_rss_mb=None,
-    )
+    args_dict = {
+        "sts2_recycle_every_episodes": None,
+        "sts2_recycle_rss_mb": None,
+    }
 
-    assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts2") == 250
-    assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts2") == 768.0
-    assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts1") == 0
-    assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts1") == 0.0
+    assert config._resolve_sts2_recycle_every_episodes(args_dict, "sts2") == 15000
+    assert config._resolve_sts2_recycle_rss_mb(args_dict, "sts2") == 768.0
+    assert config._resolve_sts2_recycle_every_episodes(args_dict, "sts1") == 0
+    assert config._resolve_sts2_recycle_rss_mb(args_dict, "sts1") == 0.0
 
 
 def test_train_rllib_allows_disabling_sts2_recycle_defaults():
-    from rllib import train_rllib
+    from rllib import config
 
-    args = argparse.Namespace(
-        sts2_recycle_every_episodes=0,
-        sts2_recycle_rss_mb=0.0,
-    )
+    args_dict = {
+        "sts2_recycle_every_episodes": 0,
+        "sts2_recycle_rss_mb": 0.0,
+    }
 
-    assert train_rllib._resolve_sts2_recycle_every_episodes(args, "sts2") == 0
-    assert train_rllib._resolve_sts2_recycle_rss_mb(args, "sts2") == 0.0
+    assert config._resolve_sts2_recycle_every_episodes(args_dict, "sts2") == 0
+    assert config._resolve_sts2_recycle_rss_mb(args_dict, "sts2") == 0.0
 
 
 def test_train_rllib_resolves_combat_eval_and_checkpoint_cadence():
-    from rllib import train_rllib
+    from rllib import config
 
-    args = argparse.Namespace(
-        checkpoint_freq=None,
-        eval_combat_episodes=500,
-        eval_combat_freq=None,
-        eval_sts2_recycle_every_episodes=None,
-        sts2_curriculum_mode="combat",
-    )
+    args_dict = {
+        "checkpoint_freq": None,
+        "eval_combat_episodes": 500,
+        "eval_combat_freq": None,
+        "eval_sts2_recycle_every_episodes": None,
+        "sts2_curriculum_mode": "combat",
+    }
 
-    assert train_rllib._resolve_checkpoint_freq(args, "sts2") == 10
-    assert train_rllib._resolve_eval_combat_freq(args, "sts2") == 10
-    assert train_rllib._resolve_eval_sts2_recycle_every_episodes(args, "sts2") == 1000
+    assert config._resolve_checkpoint_freq(args_dict, "sts2") == 10
+    assert config._resolve_eval_combat_freq(args_dict, "sts2") == 10
+    assert config._resolve_eval_sts2_recycle_every_episodes(args_dict, "sts2") == 1000
 
-    args.eval_combat_freq = 25
-    args.checkpoint_freq = 25
-    args.eval_sts2_recycle_every_episodes = 0
+    args_dict["eval_combat_freq"] = 25
+    args_dict["checkpoint_freq"] = 25
+    args_dict["eval_sts2_recycle_every_episodes"] = 0
 
-    assert train_rllib._resolve_checkpoint_freq(args, "sts2") == 25
-    assert train_rllib._resolve_eval_combat_freq(args, "sts2") == 25
-    assert train_rllib._resolve_eval_sts2_recycle_every_episodes(args, "sts2") == 0
+    assert config._resolve_checkpoint_freq(args_dict, "sts2") == 25
+    assert config._resolve_eval_combat_freq(args_dict, "sts2") == 25
+    assert config._resolve_eval_sts2_recycle_every_episodes(args_dict, "sts2") == 0
 
 
 def test_train_rllib_disables_combat_eval_freq_when_no_eval_episodes():
-    from rllib import train_rllib
+    from rllib import config
 
-    args = argparse.Namespace(
-        eval_combat_episodes=0,
-        eval_combat_freq=None,
-        sts2_curriculum_mode="combat",
-    )
+    args_dict = {
+        "eval_combat_episodes": 0,
+        "eval_combat_freq": None,
+        "sts2_curriculum_mode": "combat",
+    }
 
-    assert train_rllib._resolve_eval_combat_freq(args, "sts2") == 0
+    assert config._resolve_eval_combat_freq(args_dict, "sts2") == 0
 
 
 def test_make_heuristic_policy_only_enables_sts2_non_none_modes():
@@ -412,15 +412,15 @@ def test_train_rllib_configures_env_runner_fault_tolerance():
             self.kwargs = kwargs
             return self
 
-    args = argparse.Namespace(
-        disable_env_runner_fault_tolerance=False,
-        env_runner_health_timeout_s=7.0,
-        env_runner_restore_timeout_s=21.0,
-        workers=3,
-    )
+    args_dict = {
+        "disable_env_runner_fault_tolerance": False,
+        "env_runner_health_timeout_s": 7.0,
+        "env_runner_restore_timeout_s": 21.0,
+        "workers": 3,
+    }
     config = FakeConfig()
 
-    assert train_rllib._configure_fault_tolerance(config, args) is config
+    assert train_rllib._configure_fault_tolerance(config, args_dict) is config
     assert config.kwargs["restart_failed_env_runners"] is True
     assert config.kwargs["ignore_env_runner_failures"] is True
     assert config.kwargs["restart_failed_sub_environments"] is True
