@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import time
+from collections import deque
 from collections.abc import Mapping
 from typing import Any, Optional
 
@@ -29,6 +31,8 @@ class RLLibActionMaskEnv(gym.Wrapper):
     {"observations": flat_observation, "action_mask": binary_mask}. The wrapped
     base env remains a normal Gymnasium env and stays framework agnostic.
     """
+
+    _RING_BUFFER_MAXLEN = 50
 
     def __init__(
         self,
@@ -58,6 +62,9 @@ class RLLibActionMaskEnv(gym.Wrapper):
         )
         self.action_space = env.action_space
         self._last_action_mask = np.ones(self.action_space.n, dtype=np.float32)
+        # Crash-debug ring buffer
+        self._ring_buffer: deque[dict[str, Any]] = deque(maxlen=self._RING_BUFFER_MAXLEN)
+        self._last_observation: dict[str, np.ndarray] | None = None
 
     def reset(
         self,
@@ -89,7 +96,36 @@ class RLLibActionMaskEnv(gym.Wrapper):
             }
 
         mask = self._extract_mask(info)
-        return self._wrap_observation(observation, mask), reward, terminated, truncated, info
+        wrapped_obs = self._wrap_observation(observation, mask)
+        self._last_observation = wrapped_obs
+
+        # Record to ring buffer for crash debugging
+        progress = {}
+        if isinstance(info, dict) and isinstance(info.get("progress_metrics"), dict):
+            progress = info["progress_metrics"]
+        self._ring_buffer.append({
+            "t": time.monotonic(),
+            "action": int(action),
+            "original_action": original_action,
+            "reward": float(reward),
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+            "encounter_id": progress.get("encounter_id"),
+            "combat_step": progress.get("combat_steps"),
+            "terminated_reason": progress.get("terminated_reason"),
+        })
+
+        return wrapped_obs, reward, terminated, truncated, info
+
+    @property
+    def crash_ring_buffer(self) -> deque[dict[str, Any]]:
+        """Bounded recent action/state ring buffer for crash debugging."""
+        return self._ring_buffer
+
+    @property
+    def last_observation(self) -> dict[str, np.ndarray] | None:
+        """Last wrapped observation, for crash state snapshots."""
+        return self._last_observation
 
     def action_masks(self) -> np.ndarray:
         """Compatibility hook for tooling that still asks the env directly."""

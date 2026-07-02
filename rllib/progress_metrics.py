@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from sts2.encounters import known_combat_encounter_ids
@@ -85,6 +86,15 @@ class ProgressMetricsCallback(DefaultCallbacks):
                 episode.custom_metrics[f"terminated_reason_{known_reason}"] = float(
                     known_reason == reason
                 )
+            # Grouped category metrics (weak/normal/elite/boss)
+            raw_encounter = str(combat.get("encounter_id") or "")
+            category = classify_encounter(raw_encounter)
+            is_win = float(_safe_float(combat.get("combat_win"), 0.0))
+            hp_lost = _safe_float(combat.get("hp_lost"), 0.0)
+            for cat in ("weak", "normal", "elite", "boss"):
+                episode.custom_metrics[f"{cat}_win_rate"] = is_win if category == cat else 0.0
+                episode.custom_metrics[f"{cat}_avg_hp_lost"] = hp_lost if category == cat else 0.0
+                episode.custom_metrics[f"{cat}_encounter_count"] = 1.0 if category == cat else 0.0
 
     @staticmethod
     def _record_progress(episode: Any, info: Any) -> None:
@@ -160,3 +170,17 @@ def _metric_key(value: Any) -> str:
         else:
             allowed.append("_")
     return "".join(allowed).strip("_")
+
+
+def classify_encounter(encounter_id: str) -> str:
+    """Classify an encounter as weak/normal/elite/boss/other by suffix."""
+    upper = str(encounter_id or "").strip().upper()
+    if upper.endswith("_WEAK"):
+        return "weak"
+    if upper.endswith("_NORMAL"):
+        return "normal"
+    if upper.endswith("_ELITE"):
+        return "elite"
+    if upper.endswith("_BOSS"):
+        return "boss"
+    return "other"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import datetime as dt
 import json
 import logging
@@ -20,348 +19,62 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from engine_factory import normalize_game_version
-from rllib.env_wrapper import (
-    DEFAULT_RLLIB_BASE_PORT,
-    RLLIB_ENV_NAME,
-    make_sts_rllib_env,
-    register_rllib_env,
+from rllib.config import (
+    build_env_config,
+    handle_dry_run,
+    parse_args,
+    resolve_config,
 )
-from rllib.sb3_transfer import try_transfer_sb3_policy
-from rllib.smoke_env import RLLIB_SMOKE_ENV_NAME, register_smoke_env
-from sts2.encounters import combat_pool_names
-
+from rllib.console import TrainingConsole
+from rllib.preflight import run_preflight
+from rllib.run_folder import RunFolder, create_run_folder
 
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+RUNS_DIR = os.path.join(PROJECT_ROOT, "runs")
 TIMESTAMP = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 CHECKPOINT_METADATA_FILENAME = "checkpoint_metadata.json"
 CHECKPOINT_METADATA_SCHEMA = "sts_rl_checkpoint_v1"
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ray RLlib training for STS")
-    parser.add_argument("--workers", type=int, default=2, help="Ray EnvRunner/rollout workers.")
-    parser.add_argument("--envs-per-worker", type=int, default=1, help="Vector envs per Ray worker.")
-    parser.add_argument("--timesteps", type=int, default=1_000_000, help="Additional env steps to train.")
-    parser.add_argument("--base-env-dir", default=os.path.join(PROJECT_ROOT, "SlayTheSpire"))
-    parser.add_argument("--workspace-dir", default=os.path.join(PROJECT_ROOT, "rllib_workers"))
-    parser.add_argument("--game-version", default="1", choices=["1", "2", "sts1", "sts2"])
-    parser.add_argument("--sts2-cli-path", default="sts2-cli")
-    parser.add_argument(
-        "--sts2-cli-cwd",
-        default="",
-        help=(
-            "Working directory for sts2-cli/dotnet. Use the sts2-cli repo root "
-            "when relying on its global.json."
-        ),
-    )
-    parser.add_argument(
-        "--sts2-cli-arg",
-        action="append",
-        default=[],
-        dest="sts2_cli_args",
-        help="Extra argument passed to sts2-cli. Can be repeated.",
-    )
-    parser.add_argument(
-        "--character",
-        default="IRONCLAD",
-        help=(
-            "Character/run archetype to request from the selected engine. "
-            "StS1 validates IRONCLAD/SILENT/DEFECT/WATCHER."
-        ),
-    )
-    parser.add_argument("--ascension", type=int, default=0)
-    parser.add_argument("--sts2-lang", default="en")
-    parser.add_argument(
-        "--sts2-curriculum-mode",
-        choices=["full_run", "combat"],
-        default="full_run",
-        help="STS2 reset profile. 'combat' starts a run and immediately enters one combat room.",
-    )
-    parser.add_argument(
-        "--sts2-reward-mode",
-        choices=["full_v3_2", "combat_sparse", "combat_dense"],
-        default="full_v3_2",
-        help=(
-            "Reward function for STS2. combat_sparse/dense are intended for "
-            "--sts2-curriculum-mode combat."
-        ),
-    )
-    parser.add_argument(
-        "--sts2-combat-room-type",
-        default="combat",
-        help="Room type used by --sts2-curriculum-mode combat.",
-    )
-    parser.add_argument(
-        "--sts2-combat-encounter",
-        default="SHRINKER_BEETLE_WEAK",
-        help="Encounter id used by --sts2-curriculum-mode combat when the pool is fixed.",
-    )
-    parser.add_argument(
-        "--sts2-combat-enemy-pool",
-        choices=list(combat_pool_names()),
-        default="fixed",
-        help=(
-            "Real encounter sampling pool for --sts2-curriculum-mode combat. "
-            "Use fixed for --sts2-combat-encounter smoke tests."
-        ),
-    )
-    parser.add_argument(
-        "--sts2-combat-damage-reward-scale",
-        type=float,
-        default=0.01,
-        help="Dense combat reward multiplier for monster HP damage dealt.",
-    )
-    parser.add_argument(
-        "--sts2-combat-hp-loss-reward-scale",
-        type=float,
-        default=0.01,
-        help="Dense combat reward penalty multiplier for player HP lost.",
-    )
-    parser.add_argument(
-        "--sts2-combat-action-penalty",
-        type=float,
-        default=0.001,
-        help="Dense combat reward per-action penalty.",
-    )
-    parser.add_argument(
-        "--sts2-debug-episodes",
-        type=int,
-        default=0,
-        help="Log detailed combat decisions for the first N STS2 episodes per worker.",
-    )
-    parser.add_argument(
-        "--eval-random-baseline",
-        type=int,
-        default=0,
-        help="Run N random valid-action combat episodes on the selected STS2 combat pool.",
-    )
-    parser.add_argument(
-        "--eval-random-baseline-freq",
-        type=int,
-        default=0,
-        help=(
-            "Also rerun the random baseline every N train iterations. "
-            "Default 0 means startup only."
-        ),
-    )
-    parser.add_argument(
-        "--eval-combat-episodes",
-        type=int,
-        default=0,
-        help="Run N policy evaluation combat episodes on --eval-combat-freq iterations.",
-    )
-    parser.add_argument(
-        "--eval-combat-freq",
-        type=int,
-        default=None,
-        help=(
-            "Run PPO combat eval every N train iterations. Defaults to 10 for "
-            "STS2 combat curriculum and 1 otherwise."
-        ),
-    )
-    parser.add_argument(
-        "--eval-combat-deterministic",
-        action="store_true",
-        help="Use explore=False for --eval-combat-episodes.",
-    )
-    parser.add_argument(
-        "--eval-sts2-recycle-every-episodes",
-        type=int,
-        default=None,
-        help=(
-            "Episode recycle limit used only by manual STS2 eval envs. "
-            "Defaults to 1000 for STS2 combat eval; use 0 to disable."
-        ),
-    )
-    parser.add_argument(
-        "--sts2-capture-stderr",
-        action="store_true",
-        help="Write each sts2-cli worker stderr stream to sts2-cli.stderr.log for debugging.",
-    )
-    parser.add_argument(
-        "--sts2-recycle-every-episodes",
-        type=int,
-        default=None,
-        help=(
-            "Restart each sts2-cli process after this many completed runs. "
-            "Defaults to 250 for StS2. Use 0 to disable."
-        ),
-    )
-    parser.add_argument(
-        "--sts2-recycle-every-steps",
-        type=int,
-        default=0,
-        help="Restart each sts2-cli process after this many env steps. Use 0 to disable.",
-    )
-    parser.add_argument(
-        "--sts2-recycle-rss-mb",
-        type=float,
-        default=None,
-        help=(
-            "Restart each sts2-cli process when its RSS reaches this many MB. "
-            "Defaults to 768 for StS2. Use 0 to disable."
-        ),
-    )
-    parser.add_argument(
-        "--multi-character",
-        action="store_true",
-        help="Round-robin the default roster for the selected game version.",
-    )
-    parser.add_argument(
-        "--heuristic-mode",
-        choices=["none", "hard", "mask"],
-        default="none",
-        help=(
-            "Optional strategic heuristic integration. "
-            "'hard' makes non-combat STS2 masks one-hot; 'mask' keeps top-k heuristic actions."
-        ),
-    )
-    parser.add_argument(
-        "--heuristic-top-k",
-        type=int,
-        default=1,
-        help="Number of heuristic-ranked actions kept when --heuristic-mode=mask.",
-    )
-    parser.add_argument("--ram-usage", choices=["low", "default", "safe"], default="default")
-    parser.add_argument("--base-port", type=int, default=DEFAULT_RLLIB_BASE_PORT)
-    parser.add_argument("--use-xvfb", action="store_true")
-    parser.add_argument("--force-rebuild", action="store_true")
-    parser.add_argument("--debug-env-info", action="store_true")
-    parser.add_argument("--num-gpus", type=float, default=0.0)
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help=(
-            "Optional run seed. With --sts2-combat-enemy-pool fixed this helps "
-            "reproduce a specific combat crash."
-        ),
-    )
-    parser.add_argument("--train-batch-size", type=int, default=1024)
-    parser.add_argument("--minibatch-size", type=int, default=256)
-    parser.add_argument("--num-epochs", type=int, default=4)
-    parser.add_argument("--rollout-fragment-length", type=int, default=128)
-    parser.add_argument(
-        "--checkpoint-freq",
-        type=int,
-        default=None,
-        help=(
-            "Save every N RLlib train iterations. Defaults to 10 for STS2 combat "
-            "curriculum and 1 otherwise. Use 0 to disable iteration checkpoints."
-        ),
-    )
-    parser.add_argument(
-        "--checkpoint-dir",
-        default="",
-        help=(
-            "RLlib checkpoint directory. Defaults to models/rllib/sts1 or "
-            "models/rllib/sts2 based on --game-version. When --training-stage "
-            "is set, the default becomes models/rllib/<game>/<stage>."
-        ),
-    )
-    parser.add_argument(
-        "--training-stage",
-        default="",
-        help=(
-            "Curriculum/checkpoint stage label, e.g. combat_c0_ironclad_starter_act1. "
-            "Used for metadata and default checkpoint directory scoping."
-        ),
-    )
-    parser.add_argument(
-        "--deck-mode",
-        default="",
-        help="Optional curriculum metadata label, e.g. starter or randomdeck.",
-    )
-    parser.add_argument(
-        "--enemy-pool",
-        default="",
-        help="Optional curriculum metadata label, e.g. act1 or act12.",
-    )
-    parser.add_argument(
-        "--run-notes",
-        default="",
-        help="Short free-form note stored in checkpoint_metadata.json.",
-    )
-    parser.add_argument("--resume-from", default="", help="Path to an RLlib checkpoint directory.")
-    parser.add_argument(
-        "--no-auto-resume",
-        action="store_true",
-        help="Do not automatically resume from the default per-game RLlib checkpoint directory.",
-    )
-    parser.add_argument("--init-from-sb3", default="", help="Optional SB3 .zip checkpoint for warm-start weights.")
-    parser.add_argument(
-        "--process-timeout-s",
-        type=float,
-        default=None,
-        help="Per-env game I/O timeout. Defaults to 120s for StS1 and 30s for StS2.",
-    )
-    parser.add_argument(
-        "--sample-timeout-s",
-        type=float,
-        default=None,
-        help=(
-            "Seconds Ray waits for workers to produce rollout fragments. "
-            "Defaults are resolved per game version."
-        ),
-    )
-
-    parser.add_argument(
-        "--train-heartbeat-s",
-        type=float,
-        default=30.0,
-        help="Log a warning every N seconds while algo.train() is still running. Use 0 to disable.",
-    )
-    parser.add_argument(
-        "--slow-iteration-s",
-        type=float,
-        default=60.0,
-        help="Warn when one returned RLlib train iteration exceeds this duration. Use 0 to disable.",
-    )
-    parser.add_argument(
-        "--cpus-per-worker",
-        type=float,
-        default=1.0,
-        help="Ray CPU resources reserved per rollout worker actor.",
-    )
-    parser.add_argument(
-        "--disable-env-runner-fault-tolerance",
-        action="store_true",
-        help="Disable RLlib EnvRunner restart/ignore fault-tolerance settings.",
-    )
-    parser.add_argument(
-        "--env-runner-health-timeout-s",
-        type=float,
-        default=10.0,
-        help="Seconds to wait for Ray EnvRunner health probes when fault tolerance is enabled.",
-    )
-    parser.add_argument(
-        "--env-runner-restore-timeout-s",
-        type=float,
-        default=60.0,
-        help="Seconds to wait for Ray EnvRunner restoration when fault tolerance is enabled.",
-    )
-
-    parser.add_argument("--smoke-test", action="store_true", help="Use a tiny masked env instead of launching STS.")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    return parser.parse_args()
-
-
 def main() -> None:
     args = parse_args()
+    config = resolve_config(args)
+    handle_dry_run(config)
+
+    # Create run folder
+    experiment_name = config.get("_training_stage", "experiment")
+    run_folder = create_run_folder(RUNS_DIR, experiment_name, config)
+    config["_run_folder_path"] = run_folder.path
+
+    # Logging: file handler to run folder, console handler conditional
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(MODELS_DIR, exist_ok=True)
 
-    log_file = os.path.join(LOG_DIR, f"rllib_training_{TIMESTAMP}.log")
+    console_mode = str(config.get("console_mode", "compact")).strip().lower()
+
+    # File handler always gets full verbose output
+    file_handler = logging.FileHandler(run_folder.train_log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    )
+
+    # Console handler: in compact mode, only show warnings+ (rich handles the rest)
+    console_handler = logging.StreamHandler(sys.stderr)
+    if console_mode == "compact":
+        console_handler.setLevel(logging.WARNING)
+    elif console_mode == "quiet":
+        console_handler.setLevel(logging.WARNING)
+    else:
+        console_handler.setLevel(getattr(logging, config.get("log_level", "INFO")))
+    console_handler.setFormatter(
+        logging.Formatter("[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    )
+
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(sys.stderr),
-        ],
+        level=logging.DEBUG,
+        handlers=[file_handler, console_handler],
     )
     logger = logging.getLogger("train_rllib")
 
@@ -371,84 +84,24 @@ def main() -> None:
     from rllib.progress_metrics import ProgressMetricsCallback
 
     logger.info("Starting RLlib training session %s", TIMESTAMP)
-    logger.info("Log file: %s", log_file)
-    logger.info(
-        "Algorithm=PPO workers=%d envs_per_worker=%d timesteps=%d",
-        args.workers,
-        args.envs_per_worker,
-        args.timesteps,
-    )
+    logger.info("Log file: %s", run_folder.train_log_path)
+    logger.info("Run folder: %s", run_folder.path)
 
-    game_key = _checkpoint_game_key(args)
-    args.process_timeout_s = _resolve_process_timeout(args, game_key)
-    args.sample_timeout_s = _resolve_sample_timeout(args, game_key)
-    args.sts2_recycle_every_episodes = _resolve_sts2_recycle_every_episodes(
-        args,
-        game_key,
-    )
-    args.sts2_recycle_every_steps = max(0, int(args.sts2_recycle_every_steps or 0))
-    args.sts2_recycle_rss_mb = _resolve_sts2_recycle_rss_mb(args, game_key)
-    args.checkpoint_freq = _resolve_checkpoint_freq(args, game_key)
-    args.eval_combat_freq = _resolve_eval_combat_freq(args, game_key)
-    args.eval_random_baseline_freq = max(0, int(args.eval_random_baseline_freq or 0))
-    args.eval_sts2_recycle_every_episodes = _resolve_eval_sts2_recycle_every_episodes(
-        args,
-        game_key,
-    )
-    checkpoint_dir = _resolve_checkpoint_dir(args, game_key)
-    logger.info("Checkpoint directory: %s", checkpoint_dir)
-    _validate_sts2_launch_config(args, game_key, logger)
-    logger.info(
-        "Training metadata: stage=%s deck=%s enemy_pool=%s",
-        _metadata_training_stage(args, game_key),
-        _metadata_value(args, "deck_mode"),
-        _metadata_value(args, "enemy_pool"),
-    )
-    logger.info(
-        "Timeouts: process=%.1fs sample=%.1fs heartbeat=%.1fs env_runner_health=%.1fs env_runner_restore=%.1fs",
-        args.process_timeout_s,
-        args.sample_timeout_s,
-        args.train_heartbeat_s,
-        args.env_runner_health_timeout_s,
-        args.env_runner_restore_timeout_s,
-    )
-    if game_key == "sts2":
-        logger.info(
-            "STS2 process recycle: episodes=%d steps=%d rss_mb=%.1f",
-            args.sts2_recycle_every_episodes,
-            args.sts2_recycle_every_steps,
-            args.sts2_recycle_rss_mb,
-        )
-        logger.info(
-            "STS2 strategic heuristic: mode=%s top_k=%d",
-            args.heuristic_mode,
-            max(1, int(args.heuristic_top_k)),
-        )
-        logger.info(
-            "STS2 curriculum: mode=%s reward_mode=%s room_type=%s encounter=%s combat_enemy_pool=%s",
-            args.sts2_curriculum_mode,
-            args.sts2_reward_mode,
-            args.sts2_combat_room_type,
-            args.sts2_combat_encounter,
-            args.sts2_combat_enemy_pool,
-        )
-        logger.info(
-            "STS2 eval/checkpoint cadence: eval_combat_episodes=%d eval_combat_freq=%d "
-            "eval_random_baseline=%d eval_random_baseline_freq=%d checkpoint_freq=%d "
-            "eval_recycle_episodes=%d",
-            max(0, int(args.eval_combat_episodes or 0)),
-            args.eval_combat_freq,
-            max(0, int(args.eval_random_baseline or 0)),
-            args.eval_random_baseline_freq,
-            args.checkpoint_freq,
-            args.eval_sts2_recycle_every_episodes,
-        )
-    _warn_if_worker_count_is_aggressive(args, game_key, logger)
+    game_key = config["_game_key"]
+    checkpoint_dir = config["_checkpoint_dir"]
 
+    # Preflight validation (before Ray)
+    run_preflight(config, logger)
+
+    # Initialize Ray
     ray.init(ignore_reinit_error=True, log_to_driver=True)
     register_action_mask_model()
 
-    if args.smoke_test:
+    # Build env
+    from rllib.env_wrapper import RLLIB_ENV_NAME, register_rllib_env
+    from rllib.smoke_env import RLLIB_SMOKE_ENV_NAME, register_smoke_env
+
+    if config.get("smoke_test", False):
         register_smoke_env()
         env_name = RLLIB_SMOKE_ENV_NAME
         env_config: dict[str, Any] = {}
@@ -456,215 +109,195 @@ def main() -> None:
     else:
         register_rllib_env()
         env_name = RLLIB_ENV_NAME
-        env_config = {
-            "base_env_dir": args.base_env_dir,
-            "workspace_dir": args.workspace_dir,
-            "game_version": args.game_version,
-            "character_class": args.character,
-            "multi_character": args.multi_character,
-            "heuristic_mode": args.heuristic_mode,
-            "heuristic_top_k": args.heuristic_top_k,
-            "ram_usage": args.ram_usage,
-            "base_port": args.base_port,
-            "use_xvfb": args.use_xvfb,
-            "force_rebuild": args.force_rebuild,
-            "debug_env_info": args.debug_env_info,
-            "num_envs_per_env_runner": args.envs_per_worker,
-            "sts2_cli_path": args.sts2_cli_path,
-            "sts2_cli_args": args.sts2_cli_args,
-            "sts2_cli_cwd": args.sts2_cli_cwd,
-            "sts2_capture_stderr": args.sts2_capture_stderr,
-            "sts2_recycle_every_episodes": args.sts2_recycle_every_episodes,
-            "sts2_recycle_every_steps": args.sts2_recycle_every_steps,
-            "sts2_recycle_rss_mb": args.sts2_recycle_rss_mb,
-            "sts2_curriculum_mode": args.sts2_curriculum_mode,
-            "sts2_reward_mode": args.sts2_reward_mode,
-            "sts2_combat_room_type": args.sts2_combat_room_type,
-            "sts2_combat_encounter": args.sts2_combat_encounter,
-            "sts2_combat_enemy_pool": args.sts2_combat_enemy_pool,
-            "sts2_combat_damage_reward_scale": args.sts2_combat_damage_reward_scale,
-            "sts2_combat_hp_loss_reward_scale": args.sts2_combat_hp_loss_reward_scale,
-            "sts2_combat_action_penalty": args.sts2_combat_action_penalty,
-            "sts2_debug_episodes": args.sts2_debug_episodes,
-            "process_timeout": args.process_timeout_s,
-            "ascension": args.ascension,
-            "sts2_lang": args.sts2_lang,
-            "sts2_seed": args.seed,
-            "eval_sts2_recycle_every_episodes": args.eval_sts2_recycle_every_episodes,
-        }
+        env_config = build_env_config(config)
 
     from ray.rllib.algorithms.ppo import PPOConfig
 
-    config = PPOConfig()
-    config = _configure_api_stack(config)
-    config = config.environment(env=env_name, env_config=env_config)
-    config = config.framework("torch")
-    config = _configure_rollout_workers(config, args)
-    config = _configure_training(config, args)
-    config = _configure_resources(config, args)
-    config = _configure_seed(config, args)
-    config = _configure_fault_tolerance(config, args)
-    config = _configure_callbacks(config, ProgressMetricsCallback)
-    config.model["custom_model"] = ACTION_MASK_MODEL
-    config.model["fcnet_hiddens"] = [64, 64]
-    config.model["vf_share_layers"] = False
+    ppo_config = PPOConfig()
+    ppo_config = _configure_api_stack(ppo_config)
+    ppo_config = ppo_config.environment(env=env_name, env_config=env_config)
+    ppo_config = ppo_config.framework("torch")
+    ppo_config = _configure_rollout_workers(ppo_config, config)
+    ppo_config = _configure_training(ppo_config, config)
+    ppo_config = _configure_resources(ppo_config, config)
+    ppo_config = _configure_seed(ppo_config, config)
+    ppo_config = _configure_fault_tolerance(ppo_config, config)
+    ppo_config = _configure_callbacks(ppo_config, ProgressMetricsCallback)
+    ppo_config.model["custom_model"] = ACTION_MASK_MODEL
+    ppo_config.model["fcnet_hiddens"] = [64, 64]
+    ppo_config.model["vf_share_layers"] = False
 
-    algo = _build_algorithm(config)
-    heartbeat = _TrainHeartbeat(logger, args.train_heartbeat_s)
+    algo = _build_algorithm(ppo_config)
+    heartbeat = _TrainHeartbeat(logger, float(config.get("train_heartbeat_s", 30.0)))
     heartbeat.start()
+
+    # Training console
     current_steps = 0
     source_checkpoint = ""
+    curriculum_mode = str(config.get("sts2_curriculum_mode", "full_run"))
+    target_timesteps = int(config.get("timesteps", 1_000_000))
+
     try:
-        resume_from = _resolve_resume_path(args, checkpoint_dir)
+        resume_from = _resolve_resume_path(config, checkpoint_dir)
         if resume_from:
             logger.info("Restoring RLlib checkpoint from %s", resume_from)
             algo.restore(resume_from)
-        source_checkpoint = _source_checkpoint(args, resume_from)
+        source_checkpoint = _source_checkpoint(config, resume_from)
 
         current_steps = _algorithm_env_steps(algo)
         logger.info("Current RLlib env timesteps before training: %d", current_steps)
 
-        if args.init_from_sb3 and not resume_from:
-            try_transfer_sb3_policy(algo, args.init_from_sb3, logger)
-        elif args.init_from_sb3:
+        init_sb3 = str(config.get("init_from_sb3", "") or "")
+        if init_sb3 and not resume_from:
+            from rllib.sb3_transfer import try_transfer_sb3_policy
+
+            try_transfer_sb3_policy(algo, init_sb3, logger)
+        elif init_sb3:
             logger.info("Ignoring --init-from-sb3 because an RLlib checkpoint was restored.")
 
-        if game_key == "sts2" and not args.smoke_test and args.eval_random_baseline > 0:
-            _run_random_combat_baseline(
-                env_config=env_config,
-                episodes=args.eval_random_baseline,
-                logger=logger,
-            )
+        # Random baseline at startup
+        eval_random = int(config.get("eval_random_baseline", 0) or 0)
+        if game_key == "sts2" and not config.get("smoke_test") and eval_random > 0:
+            _run_random_combat_baseline(env_config=env_config, episodes=eval_random, logger=logger)
 
-        target_steps = current_steps + args.timesteps
-        while current_steps < target_steps:
-            previous_steps = current_steps
-            iteration_started_at = time.perf_counter()
-            heartbeat.begin(next_iteration=_algorithm_iteration(algo) + 1)
-            try:
-                result = algo.train()
-            finally:
-                heartbeat.end()
-            iteration_seconds = time.perf_counter() - iteration_started_at
-            current_steps = _result_env_steps(result, fallback=current_steps)
-            step_delta = _result_env_step_delta(
-                result,
-                previous_steps=previous_steps,
-                current_steps=current_steps,
-            )
-            steps_per_second = step_delta / iteration_seconds if iteration_seconds > 0 else 0.0
-            ms_per_step = 1000.0 / steps_per_second if steps_per_second > 0 else float("inf")
-            reward = _nested_get(result, ("env_runners", "episode_return_mean"))
-            if reward is None:
-                reward = result.get("episode_reward_mean")
-            progress = _progress_log_metrics(result)
-            combat = _combat_log_metrics(result)
-            logger.info(
-                (
-                    "RLlib iteration=%s env_steps=%d (+%d) iter_s=%.2f "
-                    "steps/sec=%.1f avg_step_ms=%.2f steps=%d reward_mean=%s "
-                    "floor_mean=%s max_floor=%s boss_reached%%=%s "
-                    "boss_killed%%=%s act2%%=%s combat_win_rate=%s "
-                    "combat_loss_rate=%s combat_timeout_rate=%s avg_combat_steps=%s "
-                    "avg_hp_remaining_on_win=%s avg_hp_lost=%s "
-                    "avg_monster_hp_remaining_on_loss=%s encounters=%s reasons=%s"
-                ),
-                result.get("training_iteration"),
-                current_steps,
-                step_delta,
-                iteration_seconds,
-                steps_per_second,
-                ms_per_step,
-                current_steps,
-                reward,
-                progress["floor_mean"],
-                progress["max_floor"],
-                progress["boss_reached_pct"],
-                progress["boss_killed_pct"],
-                progress["act2_pct"],
-                combat["combat_win_rate"],
-                combat["combat_loss_rate"],
-                combat["combat_timeout_rate"],
-                combat["avg_combat_steps"],
-                combat["avg_hp_remaining_on_win"],
-                combat["avg_hp_lost"],
-                combat["avg_monster_hp_remaining_on_loss"],
-                combat["encounters"],
-                combat["terminated_reasons"],
-            )
-            if args.slow_iteration_s > 0 and iteration_seconds > args.slow_iteration_s:
-                logger.warning(
-                    (
-                        "Slow RLlib iteration: %.1fs for %d env steps. "
-                        "If this repeats, lower --process-timeout-s/--sample-timeout-s "
-                        "or reduce --train-batch-size/--rollout-fragment-length while diagnosing stragglers."
-                    ),
-                    iteration_seconds,
-                    step_delta,
-                )
-            iteration = int(result.get("training_iteration", 0) or 0)
-            if (
-                game_key == "sts2"
-                and not args.smoke_test
-                and args.eval_random_baseline > 0
-                and args.eval_random_baseline_freq > 0
-                and iteration > 0
-                and iteration % args.eval_random_baseline_freq == 0
-            ):
-                _run_random_combat_baseline(
-                    env_config=env_config,
-                    episodes=args.eval_random_baseline,
-                    logger=logger,
-                )
-            if (
-                game_key == "sts2"
-                and not args.smoke_test
-                and args.eval_combat_episodes > 0
-                and args.eval_combat_freq > 0
-                and iteration > 0
-                and iteration % args.eval_combat_freq == 0
-            ):
-                _run_policy_combat_eval(
-                    algo=algo,
-                    env_config=env_config,
-                    episodes=args.eval_combat_episodes,
-                    deterministic=bool(args.eval_combat_deterministic),
-                    logger=logger,
-                )
-            if args.checkpoint_freq > 0 and iteration % args.checkpoint_freq == 0:
-                checkpoint_path = _save_checkpoint_with_metadata(
-                    algo,
-                    logger,
-                    checkpoint_dir,
-                    args,
-                    game_key,
-                    total_steps=current_steps,
-                    source_checkpoint=source_checkpoint,
-                )
-                logger.info("Saved RLlib checkpoint: %s", checkpoint_path)
+        target_steps = current_steps + target_timesteps
 
-        checkpoint_path = _save_checkpoint_with_metadata(
-            algo,
-            logger,
-            checkpoint_dir,
-            args,
-            game_key,
-            total_steps=current_steps,
-            source_checkpoint=source_checkpoint,
+        # Init console
+        console = TrainingConsole(
+            mode=console_mode,
+            curriculum_mode=curriculum_mode,
+            target_steps=target_steps,
+            logger=logger,
         )
-        logger.info("Training complete. Final RLlib checkpoint: %s", checkpoint_path)
+
+        checkpoint_freq = int(config.get("checkpoint_freq", 1) or 1)
+        eval_combat_episodes = int(config.get("eval_combat_episodes", 0) or 0)
+        eval_combat_freq = int(config.get("eval_combat_freq", 0) or 0)
+        eval_random_freq = int(config.get("eval_random_baseline_freq", 0) or 0)
+        eval_deterministic = bool(config.get("eval_combat_deterministic", False))
+        slow_iteration_s = float(config.get("slow_iteration_s", 60.0) or 60.0)
+
+        try:
+            while current_steps < target_steps:
+                previous_steps = current_steps
+                iteration_started_at = time.perf_counter()
+                heartbeat.begin(next_iteration=_algorithm_iteration(algo) + 1)
+                try:
+                    result = algo.train()
+                finally:
+                    heartbeat.end()
+                iteration_seconds = time.perf_counter() - iteration_started_at
+                current_steps = _result_env_steps(result, fallback=current_steps)
+                step_delta = _result_env_step_delta(
+                    result,
+                    previous_steps=previous_steps,
+                    current_steps=current_steps,
+                )
+
+                reward = _nested_get(result, ("env_runners", "episode_return_mean"))
+                if reward is None:
+                    reward = result.get("episode_reward_mean")
+
+                progress = _progress_log_metrics(result)
+                combat = _combat_log_metrics(result)
+                grouped = _grouped_combat_log_metrics(result)
+
+                # Console output (mode-dependent)
+                metrics_line = console.on_iteration(
+                    iteration=int(result.get("training_iteration", 0) or 0),
+                    current_steps=current_steps,
+                    step_delta=step_delta,
+                    iteration_seconds=iteration_seconds,
+                    reward_mean=reward,
+                    progress_metrics=progress,
+                    combat_metrics=combat,
+                    grouped_combat_metrics=grouped,
+                )
+
+                # Write to metrics.jsonl (always)
+                run_folder.save_metrics_line(metrics_line)
+
+                # Verbose file log (always, regardless of console mode)
+                _log_full_iteration(
+                    logger=logger,
+                    result=result,
+                    current_steps=current_steps,
+                    step_delta=step_delta,
+                    iteration_seconds=iteration_seconds,
+                    reward=reward,
+                    progress=progress,
+                    combat=combat,
+                    grouped=grouped,
+                )
+
+                if slow_iteration_s > 0 and iteration_seconds > slow_iteration_s:
+                    logger.warning(
+                        "Slow RLlib iteration: %.1fs for %d env steps.",
+                        iteration_seconds,
+                        step_delta,
+                    )
+
+                iteration = int(result.get("training_iteration", 0) or 0)
+
+                # Periodic random baseline
+                if (
+                    game_key == "sts2"
+                    and not config.get("smoke_test")
+                    and eval_random > 0
+                    and eval_random_freq > 0
+                    and iteration > 0
+                    and iteration % eval_random_freq == 0
+                ):
+                    metrics = _run_random_combat_baseline(
+                        env_config=env_config, episodes=eval_random, logger=logger
+                    )
+                    console.on_eval("random_baseline", metrics)
+
+                # Periodic policy eval
+                if (
+                    game_key == "sts2"
+                    and not config.get("smoke_test")
+                    and eval_combat_episodes > 0
+                    and eval_combat_freq > 0
+                    and iteration > 0
+                    and iteration % eval_combat_freq == 0
+                ):
+                    metrics = _run_policy_combat_eval(
+                        algo=algo,
+                        env_config=env_config,
+                        episodes=eval_combat_episodes,
+                        deterministic=eval_deterministic,
+                        logger=logger,
+                    )
+                    console.on_eval("ppo_eval", metrics)
+
+                # Checkpoint
+                if checkpoint_freq > 0 and iteration % checkpoint_freq == 0:
+                    checkpoint_path = _save_checkpoint_with_metadata(
+                        algo, logger, checkpoint_dir, config, game_key,
+                        total_steps=current_steps, source_checkpoint=source_checkpoint,
+                    )
+                    logger.info("Saved RLlib checkpoint: %s", checkpoint_path)
+
+            # Final checkpoint
+            checkpoint_path = _save_checkpoint_with_metadata(
+                algo, logger, checkpoint_dir, config, game_key,
+                total_steps=current_steps, source_checkpoint=source_checkpoint,
+            )
+            console.on_finish({
+                "total_steps": current_steps,
+                "checkpoint_path": checkpoint_path,
+            })
+        finally:
+            console.close()
+
     except KeyboardInterrupt:
         logger.warning("Training interrupted. Saving RLlib checkpoint...")
         logger.info(
             "Saved RLlib checkpoint: %s",
             _save_checkpoint_with_metadata(
-                algo,
-                logger,
-                checkpoint_dir,
-                args,
-                game_key,
-                total_steps=current_steps,
-                source_checkpoint=source_checkpoint,
+                algo, logger, checkpoint_dir, config, game_key,
+                total_steps=current_steps, source_checkpoint=source_checkpoint,
             ),
         )
     finally:
@@ -672,6 +305,10 @@ def main() -> None:
         algo.stop()
         ray.shutdown()
 
+
+# ---------------------------------------------------------------------------
+# RLlib configuration helpers
+# ---------------------------------------------------------------------------
 
 def _configure_api_stack(config: Any) -> Any:
     if not hasattr(config, "api_stack"):
@@ -685,58 +322,65 @@ def _configure_api_stack(config: Any) -> Any:
         return config
 
 
-def _configure_rollout_workers(config: Any, args: argparse.Namespace) -> Any:
+def _configure_rollout_workers(config: Any, resolved: dict[str, Any]) -> Any:
+    workers = int(resolved.get("workers", 2) or 2)
+    envs_per_worker = int(resolved.get("envs_per_worker", 1) or 1)
+    rollout_fragment = int(resolved.get("rollout_fragment_length", 128) or 128)
+    sample_timeout = float(resolved.get("sample_timeout_s", 600.0) or 600.0)
+
     if hasattr(config, "rollouts"):
         try:
             return config.rollouts(
-                num_rollout_workers=args.workers,
-                num_envs_per_worker=args.envs_per_worker,
-                rollout_fragment_length=args.rollout_fragment_length,
-                sample_timeout_s=args.sample_timeout_s,
+                num_rollout_workers=workers,
+                num_envs_per_worker=envs_per_worker,
+                rollout_fragment_length=rollout_fragment,
+                sample_timeout_s=sample_timeout,
             )
         except (TypeError, ValueError):
             pass
     if hasattr(config, "env_runners"):
         return config.env_runners(
-            num_env_runners=args.workers,
-            num_envs_per_env_runner=args.envs_per_worker,
-            rollout_fragment_length=args.rollout_fragment_length,
-            sample_timeout_s=args.sample_timeout_s,
+            num_env_runners=workers,
+            num_envs_per_env_runner=envs_per_worker,
+            rollout_fragment_length=rollout_fragment,
+            sample_timeout_s=sample_timeout,
         )
     return config
 
 
-def _configure_training(config: Any, args: argparse.Namespace) -> Any:
+def _configure_training(config: Any, resolved: dict[str, Any]) -> Any:
+    batch = int(resolved.get("train_batch_size", 1024) or 1024)
+    mini = int(resolved.get("minibatch_size", 256) or 256)
+    epochs = int(resolved.get("num_epochs", 4) or 4)
     try:
         return config.training(
-            train_batch_size=args.train_batch_size,
-            sgd_minibatch_size=args.minibatch_size,
-            num_sgd_iter=args.num_epochs,
+            train_batch_size=batch,
+            sgd_minibatch_size=mini,
+            num_sgd_iter=epochs,
         )
     except TypeError:
         return config.training(
-            train_batch_size=args.train_batch_size,
-            minibatch_size=args.minibatch_size,
-            num_epochs=args.num_epochs,
+            train_batch_size=batch,
+            minibatch_size=mini,
+            num_epochs=epochs,
         )
 
 
-def _configure_resources(config: Any, args: argparse.Namespace) -> Any:
+def _configure_resources(config: Any, resolved: dict[str, Any]) -> Any:
+    gpus = float(resolved.get("num_gpus", 0.0) or 0.0)
+    cpus_per = float(resolved.get("cpus_per_worker", 1.0) or 1.0)
     if hasattr(config, "resources"):
-        if float(args.cpus_per_worker) == 1.0:
-            return config.resources(num_gpus=args.num_gpus)
+        if cpus_per == 1.0:
+            return config.resources(num_gpus=gpus)
         try:
-            return config.resources(
-                num_gpus=args.num_gpus,
-                num_cpus_per_worker=args.cpus_per_worker,
-            )
+            return config.resources(num_gpus=gpus, num_cpus_per_worker=cpus_per)
         except TypeError:
-            return config.resources(num_gpus=args.num_gpus)
+            return config.resources(num_gpus=gpus)
     return config
 
 
-def _configure_seed(config: Any, args: argparse.Namespace) -> Any:
-    seed = getattr(args, "seed", None)
+def _configure_seed(config: Any, resolved: dict[str, Any]) -> Any:
+    seed = resolved.get("seed")
     if seed is None or not hasattr(config, "debugging"):
         return config
     try:
@@ -745,17 +389,22 @@ def _configure_seed(config: Any, args: argparse.Namespace) -> Any:
         return config
 
 
-def _configure_fault_tolerance(config: Any, args: argparse.Namespace) -> Any:
-    if args.disable_env_runner_fault_tolerance or not hasattr(config, "fault_tolerance"):
+def _configure_fault_tolerance(config: Any, resolved: dict[str, Any]) -> Any:
+    if resolved.get("disable_env_runner_fault_tolerance") or not hasattr(config, "fault_tolerance"):
         return config
+    workers = int(resolved.get("workers", 2) or 2)
     try:
         return config.fault_tolerance(
             restart_failed_env_runners=True,
             ignore_env_runner_failures=True,
             restart_failed_sub_environments=True,
-            env_runner_health_probe_timeout_s=args.env_runner_health_timeout_s,
-            env_runner_restore_timeout_s=args.env_runner_restore_timeout_s,
-            num_consecutive_env_runner_failures_tolerance=max(args.workers, 1) * 4,
+            env_runner_health_probe_timeout_s=float(
+                resolved.get("env_runner_health_timeout_s", 10.0)
+            ),
+            env_runner_restore_timeout_s=float(
+                resolved.get("env_runner_restore_timeout_s", 60.0)
+            ),
+            num_consecutive_env_runner_failures_tolerance=max(workers, 1) * 4,
         )
     except TypeError:
         return config
@@ -776,11 +425,11 @@ def _build_algorithm(config: Any) -> Any:
     return config.build()
 
 
-def _save_checkpoint(
-    algo: Any,
-    logger: logging.Logger,
-    checkpoint_dir: str,
-) -> str:
+# ---------------------------------------------------------------------------
+# Checkpointing
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(algo: Any, logger: logging.Logger, checkpoint_dir: str) -> str:
     os.makedirs(checkpoint_dir, exist_ok=True)
     result = algo.save(checkpoint_dir)
     if isinstance(result, str):
@@ -797,7 +446,7 @@ def _save_checkpoint_with_metadata(
     algo: Any,
     logger: logging.Logger,
     checkpoint_dir: str,
-    args: argparse.Namespace,
+    config: dict[str, Any],
     game_key: str,
     *,
     total_steps: int,
@@ -805,19 +454,15 @@ def _save_checkpoint_with_metadata(
 ) -> str:
     checkpoint_path = _save_checkpoint(algo, logger, checkpoint_dir)
     _write_checkpoint_metadata(
-        checkpoint_path,
-        args,
-        game_key,
-        total_steps=total_steps,
-        source_checkpoint=source_checkpoint,
-        logger=logger,
+        checkpoint_path, config, game_key,
+        total_steps=total_steps, source_checkpoint=source_checkpoint, logger=logger,
     )
     return checkpoint_path
 
 
 def _write_checkpoint_metadata(
     checkpoint_path: str,
-    args: argparse.Namespace,
+    config: dict[str, Any],
     game_key: str,
     *,
     total_steps: int,
@@ -828,10 +473,8 @@ def _write_checkpoint_metadata(
     os.makedirs(metadata_dir, exist_ok=True)
     metadata_path = os.path.join(metadata_dir, CHECKPOINT_METADATA_FILENAME)
     payload = _checkpoint_metadata_payload(
-        args,
-        game_key,
-        total_steps=total_steps,
-        checkpoint_path=checkpoint_path,
+        config, game_key,
+        total_steps=total_steps, checkpoint_path=checkpoint_path,
         source_checkpoint=source_checkpoint,
     )
     with open(metadata_path, "w", encoding="utf-8") as handle:
@@ -843,7 +486,7 @@ def _write_checkpoint_metadata(
 
 
 def _checkpoint_metadata_payload(
-    args: argparse.Namespace,
+    config: dict[str, Any],
     game_key: str,
     *,
     total_steps: int,
@@ -856,69 +499,62 @@ def _checkpoint_metadata_payload(
         "framework": "RLlib",
         "algorithm": "PPO",
         "game_version": game_key,
-        "training_stage": _metadata_training_stage(args, game_key),
-        "character": getattr(args, "character", ""),
-        "multi_character": bool(getattr(args, "multi_character", False)),
-        "deck_mode": _metadata_value(args, "deck_mode"),
-        "enemy_pool": _metadata_value(args, "enemy_pool"),
+        "training_stage": config.get("_training_stage", ""),
+        "character": config.get("character", ""),
+        "multi_character": bool(config.get("multi_character", False)),
+        "deck_mode": config.get("deck_mode", "") or "unspecified",
+        "enemy_pool": config.get("enemy_pool", "") or "unspecified",
         "total_steps": int(total_steps),
         "source_checkpoint": os.path.abspath(source_checkpoint) if source_checkpoint else None,
         "checkpoint_path": os.path.abspath(checkpoint_path),
-        "notes": getattr(args, "run_notes", "") or "",
-        "heuristic_mode": getattr(args, "heuristic_mode", "none"),
-        "heuristic_top_k": max(1, int(getattr(args, "heuristic_top_k", 1) or 1)),
-        "seed": getattr(args, "seed", None),
+        "notes": config.get("run_notes", "") or "",
+        "heuristic_mode": config.get("heuristic_mode", "none"),
+        "heuristic_top_k": max(1, int(config.get("heuristic_top_k", 1) or 1)),
+        "seed": config.get("seed"),
+        "preset": config.get("_preset_name", "none"),
         "training": {
-            "workers": int(getattr(args, "workers", 0) or 0),
-            "envs_per_worker": int(getattr(args, "envs_per_worker", 0) or 0),
-            "train_batch_size": int(getattr(args, "train_batch_size", 0) or 0),
-            "minibatch_size": int(getattr(args, "minibatch_size", 0) or 0),
-            "num_epochs": int(getattr(args, "num_epochs", 0) or 0),
-            "rollout_fragment_length": int(
-                getattr(args, "rollout_fragment_length", 0) or 0
-            ),
-            "checkpoint_freq": int(getattr(args, "checkpoint_freq", 0) or 0),
-            "eval_combat_episodes": int(getattr(args, "eval_combat_episodes", 0) or 0),
-            "eval_combat_freq": int(getattr(args, "eval_combat_freq", 0) or 0),
-            "eval_random_baseline": int(getattr(args, "eval_random_baseline", 0) or 0),
-            "eval_random_baseline_freq": int(
-                getattr(args, "eval_random_baseline_freq", 0) or 0
-            ),
+            "workers": int(config.get("workers", 0) or 0),
+            "envs_per_worker": int(config.get("envs_per_worker", 0) or 0),
+            "train_batch_size": int(config.get("train_batch_size", 0) or 0),
+            "minibatch_size": int(config.get("minibatch_size", 0) or 0),
+            "num_epochs": int(config.get("num_epochs", 0) or 0),
+            "rollout_fragment_length": int(config.get("rollout_fragment_length", 0) or 0),
+            "checkpoint_freq": int(config.get("checkpoint_freq", 0) or 0),
+            "eval_combat_episodes": int(config.get("eval_combat_episodes", 0) or 0),
+            "eval_combat_freq": int(config.get("eval_combat_freq", 0) or 0),
+            "eval_random_baseline": int(config.get("eval_random_baseline", 0) or 0),
+            "eval_random_baseline_freq": int(config.get("eval_random_baseline_freq", 0) or 0),
             "eval_sts2_recycle_every_episodes": int(
-                getattr(args, "eval_sts2_recycle_every_episodes", 0) or 0
+                config.get("eval_sts2_recycle_every_episodes", 0) or 0
             ),
         },
         "engine": {
-            "sts2_curriculum_mode": getattr(args, "sts2_curriculum_mode", "full_run"),
-            "sts2_reward_mode": getattr(args, "sts2_reward_mode", "full_v3_2"),
-            "sts2_combat_room_type": getattr(args, "sts2_combat_room_type", "combat"),
-            "sts2_combat_encounter": getattr(
-                args,
-                "sts2_combat_encounter",
-                "SHRINKER_BEETLE_WEAK",
-            ),
-            "sts2_combat_enemy_pool": getattr(args, "sts2_combat_enemy_pool", "fixed"),
+            "sts2_curriculum_mode": config.get("sts2_curriculum_mode", "full_run"),
+            "sts2_reward_mode": config.get("sts2_reward_mode", "full_v3_2"),
+            "sts2_combat_room_type": config.get("sts2_combat_room_type", "combat"),
+            "sts2_combat_encounter": config.get("sts2_combat_encounter", "SHRINKER_BEETLE_WEAK"),
+            "sts2_combat_enemy_pool": config.get("sts2_combat_enemy_pool", "fixed"),
             "sts2_combat_damage_reward_scale": float(
-                getattr(args, "sts2_combat_damage_reward_scale", 0.01) or 0.01
+                config.get("sts2_combat_damage_reward_scale", 0.01) or 0.01
             ),
             "sts2_combat_hp_loss_reward_scale": float(
-                getattr(args, "sts2_combat_hp_loss_reward_scale", 0.01) or 0.01
+                config.get("sts2_combat_hp_loss_reward_scale", 0.01) or 0.01
             ),
             "sts2_combat_action_penalty": float(
-                getattr(args, "sts2_combat_action_penalty", 0.001) or 0.001
+                config.get("sts2_combat_action_penalty", 0.001) or 0.001
             ),
-            "sts2_debug_episodes": int(getattr(args, "sts2_debug_episodes", 0) or 0),
-            "sts2_cli_path": getattr(args, "sts2_cli_path", ""),
-            "sts2_cli_cwd": getattr(args, "sts2_cli_cwd", ""),
-            "sts2_cli_args": list(getattr(args, "sts2_cli_args", []) or []),
+            "sts2_debug_episodes": int(config.get("sts2_debug_episodes", 0) or 0),
+            "sts2_cli_path": config.get("sts2_cli_path", ""),
+            "sts2_cli_cwd": config.get("sts2_cli_cwd", ""),
+            "sts2_cli_args": list(config.get("sts2_cli_args") or []),
             "sts2_recycle_every_episodes": int(
-                getattr(args, "sts2_recycle_every_episodes", 0) or 0
+                config.get("sts2_recycle_every_episodes", 0) or 0
             ),
             "sts2_recycle_every_steps": int(
-                getattr(args, "sts2_recycle_every_steps", 0) or 0
+                config.get("sts2_recycle_every_steps", 0) or 0
             ),
             "sts2_recycle_rss_mb": float(
-                getattr(args, "sts2_recycle_rss_mb", 0.0) or 0.0
+                config.get("sts2_recycle_rss_mb", 0.0) or 0.0
             ),
         },
     }
@@ -931,104 +567,15 @@ def _checkpoint_metadata_dir(checkpoint_path: str) -> str:
     return parent or os.getcwd()
 
 
-def _checkpoint_game_key(args: argparse.Namespace) -> str:
-    if args.smoke_test:
-        return "smoke"
-    return normalize_game_version(args.game_version)
+# ---------------------------------------------------------------------------
+# Resume / checkpoint discovery
+# ---------------------------------------------------------------------------
 
-
-def _resolve_checkpoint_dir(args: argparse.Namespace, game_key: str) -> str:
-    if args.checkpoint_dir:
-        return os.path.abspath(args.checkpoint_dir)
-    stage = _safe_path_component(getattr(args, "training_stage", ""))
-    if stage:
-        return os.path.join(MODELS_DIR, "rllib", game_key, stage)
-    return os.path.join(MODELS_DIR, "rllib", game_key)
-
-
-def _safe_path_component(value: str) -> str:
-    text = str(value or "").strip().replace(" ", "_")
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    return "".join(ch if ch in allowed else "_" for ch in text).strip("._")
-
-
-def _metadata_training_stage(args: argparse.Namespace, game_key: str) -> str:
-    stage = str(getattr(args, "training_stage", "") or "").strip()
-    if stage:
-        return stage
-    if game_key == "smoke":
-        return "smoke"
-    return "full_run"
-
-
-def _metadata_value(args: argparse.Namespace, field: str) -> str:
-    value = str(getattr(args, field, "") or "").strip()
-    return value if value else "unspecified"
-
-
-def _source_checkpoint(args: argparse.Namespace, resume_from: str) -> str:
-    if resume_from:
-        return os.path.abspath(resume_from)
-    init_from_sb3 = getattr(args, "init_from_sb3", "")
-    if init_from_sb3:
-        return os.path.abspath(init_from_sb3)
-    return ""
-
-
-def _validate_sts2_launch_config(
-    args: argparse.Namespace,
-    game_key: str,
-    logger: logging.Logger,
-) -> None:
-    if game_key != "sts2":
-        return
-
-    cli_path = str(getattr(args, "sts2_cli_path", "") or "")
-    cli_cwd = str(getattr(args, "sts2_cli_cwd", "") or "")
-    resolved = _resolve_executable_path(cli_path, cli_cwd)
-    if resolved:
-        logger.info("STS2 executable resolved: %s", resolved)
-        return
-
-    hint = (
-        "StS2 executable not found before starting Ray workers. "
-        f"--sts2-cli-path={cli_path!r} cwd={cli_cwd!r}. "
-        "Use either an absolute Sts2Headless.exe path, or run through dotnet, e.g. "
-        "--sts2-cli-path dotnet --sts2-cli-cwd C:\\dev\\sts2-cli "
-        "--sts2-cli-arg=run --sts2-cli-arg=--no-build --sts2-cli-arg=--project "
-        "--sts2-cli-arg=C:\\dev\\sts2-cli\\src\\Sts2Headless\\Sts2Headless.csproj"
-    )
-    raise SystemExit(hint)
-
-
-def _resolve_executable_path(cli_path: str, cli_cwd: str = "") -> str:
-    candidate = str(cli_path or "").strip()
-    if not candidate:
-        return ""
-
-    if os.path.isabs(candidate) or os.path.dirname(candidate):
-        paths = [candidate]
-        if cli_cwd and not os.path.isabs(candidate):
-            paths.insert(0, os.path.join(cli_cwd, candidate))
-        for path in paths:
-            absolute = os.path.abspath(path)
-            if os.path.isfile(absolute):
-                return absolute
-        return ""
-
-    if cli_cwd:
-        cwd_candidate = os.path.abspath(os.path.join(cli_cwd, candidate))
-        if os.path.isfile(cwd_candidate):
-            return cwd_candidate
-
-    found = shutil.which(candidate)
-    return found or ""
-
-
-def _resolve_resume_path(args: argparse.Namespace, checkpoint_dir: str) -> str:
-    if args.resume_from:
-        return os.path.abspath(args.resume_from)
-    if args.no_auto_resume:
+def _resolve_resume_path(config: dict[str, Any], checkpoint_dir: str) -> str:
+    resume = config.get("resume_from", "")
+    if resume:
+        return os.path.abspath(str(resume))
+    if config.get("no_auto_resume", False):
         return ""
     return _find_latest_rllib_checkpoint(checkpoint_dir)
 
@@ -1056,108 +603,18 @@ def _is_rllib_checkpoint_dir(path: str) -> bool:
     )
 
 
-def _resolve_process_timeout(args: argparse.Namespace, game_key: str) -> float:
-    if args.process_timeout_s is not None:
-        return float(args.process_timeout_s)
-    if game_key == "sts2":
-        return 30.0
-    return 120.0
+def _source_checkpoint(config: dict[str, Any], resume_from: str) -> str:
+    if resume_from:
+        return os.path.abspath(resume_from)
+    init_sb3 = config.get("init_from_sb3", "")
+    if init_sb3:
+        return os.path.abspath(str(init_sb3))
+    return ""
 
 
-def _resolve_sample_timeout(args: argparse.Namespace, game_key: str) -> float:
-    if args.sample_timeout_s is not None:
-        return float(args.sample_timeout_s)
-    if game_key == "sts2":
-        return 15.0
-    if game_key == "smoke":
-        return 60.0
-    return 600.0
-
-
-def _resolve_checkpoint_freq(args: argparse.Namespace, game_key: str) -> int:
-    value = getattr(args, "checkpoint_freq", None)
-    if value is not None:
-        return max(0, int(value))
-    if _is_sts2_combat_curriculum(args, game_key):
-        return 10
-    return 1
-
-
-def _resolve_eval_combat_freq(args: argparse.Namespace, game_key: str) -> int:
-    if int(getattr(args, "eval_combat_episodes", 0) or 0) <= 0:
-        return 0
-    value = getattr(args, "eval_combat_freq", None)
-    if value is not None:
-        return max(0, int(value))
-    if _is_sts2_combat_curriculum(args, game_key):
-        return 10
-    return 1
-
-
-def _resolve_eval_sts2_recycle_every_episodes(
-    args: argparse.Namespace,
-    game_key: str,
-) -> int:
-    if (
-        int(getattr(args, "eval_combat_episodes", 0) or 0) <= 0
-        and int(getattr(args, "eval_random_baseline", 0) or 0) <= 0
-    ):
-        return 0
-    value = getattr(args, "eval_sts2_recycle_every_episodes", None)
-    if value is not None:
-        return max(0, int(value))
-    if _is_sts2_combat_curriculum(args, game_key):
-        return 1000
-    return 0
-
-
-def _is_sts2_combat_curriculum(args: argparse.Namespace, game_key: str) -> bool:
-    return (
-        game_key == "sts2"
-        and str(getattr(args, "sts2_curriculum_mode", "")).strip().lower() == "combat"
-    )
-
-
-def _resolve_sts2_recycle_every_episodes(
-    args: argparse.Namespace,
-    game_key: str,
-) -> int:
-    value = getattr(args, "sts2_recycle_every_episodes", None)
-    if value is not None:
-        return max(0, int(value))
-    if game_key == "sts2":
-        return 250
-    return 0
-
-
-def _resolve_sts2_recycle_rss_mb(args: argparse.Namespace, game_key: str) -> float:
-    value = getattr(args, "sts2_recycle_rss_mb", None)
-    if value is not None:
-        return max(0.0, float(value))
-    if game_key == "sts2":
-        return 768.0
-    return 0.0
-
-
-def _warn_if_worker_count_is_aggressive(
-    args: argparse.Namespace,
-    game_key: str,
-    logger: logging.Logger,
-) -> None:
-    logical_cpus = os.cpu_count() or 1
-    env_count = max(args.workers, 0) * max(args.envs_per_worker, 1)
-    if game_key == "sts2" and env_count >= logical_cpus:
-        logger.warning(
-            (
-                "StS2 worker count is at or above logical CPU count: %d envs on %d CPUs. "
-                "Each env also owns an external C# process, so 16 workers on an 8C/16T "
-                "CPU can expose scheduler stalls. Treat 8-12 workers as the first "
-                "performance sweep before trying 16 again."
-            ),
-            env_count,
-            logical_cpus,
-        )
-
+# ---------------------------------------------------------------------------
+# Metric extraction
+# ---------------------------------------------------------------------------
 
 def _algorithm_env_steps(algo: Any) -> int:
     counters = getattr(algo, "_counters", {})
@@ -1190,6 +647,199 @@ def _result_env_steps(result: dict[str, Any], fallback: int) -> int:
     return fallback
 
 
+def _result_env_step_delta(
+    result: dict[str, Any],
+    *,
+    previous_steps: int,
+    current_steps: int,
+) -> int:
+    candidates = (
+        result.get("num_env_steps_sampled_this_iter"),
+        result.get("timesteps_this_iter"),
+        _nested_get(result, ("env_runners", "num_env_steps_sampled_this_iter")),
+        _nested_get(result, ("sampler_results", "num_env_steps_sampled")),
+    )
+    for value in candidates:
+        if value is not None:
+            return max(0, int(value))
+    return max(0, current_steps - previous_steps)
+
+
+def _progress_log_metrics(result: dict[str, Any]) -> dict[str, str]:
+    return {
+        "floor_mean": _format_metric(_custom_metric(result, "floor_mean")),
+        "max_floor": _format_metric(
+            _custom_metric(result, "max_floor_max")
+            if _custom_metric(result, "max_floor_max") is not None
+            else _custom_metric(result, "floor_max")
+        ),
+        "boss_reached_pct": _format_metric(_custom_metric(result, "boss_reached_pct_mean")),
+        "boss_killed_pct": _format_metric(_custom_metric(result, "boss_killed_pct_mean")),
+        "act2_pct": _format_metric(_custom_metric(result, "act2_pct_mean")),
+    }
+
+
+def _combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
+    return {
+        "combat_win_rate": _format_metric(_custom_metric(result, "combat_win_rate_mean")),
+        "combat_loss_rate": _format_metric(_custom_metric(result, "combat_loss_rate_mean")),
+        "combat_timeout_rate": _format_metric(
+            _custom_metric(result, "combat_timeout_rate_mean")
+        ),
+        "avg_combat_steps": _format_metric(_custom_metric(result, "avg_combat_steps_mean")),
+        "avg_hp_remaining_on_win": _format_metric(
+            _custom_metric(result, "avg_hp_remaining_on_win_mean")
+        ),
+        "avg_hp_lost": _format_metric(_custom_metric(result, "avg_hp_lost_mean")),
+        "avg_monster_hp_remaining_on_loss": _format_metric(
+            _custom_metric(result, "avg_monster_hp_remaining_on_loss_mean")
+        ),
+        "encounters": _prefixed_custom_metrics(result, "encounter_id_"),
+        "terminated_reasons": _prefixed_custom_metrics(result, "terminated_reason_"),
+    }
+
+
+def _grouped_combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
+    """Extract grouped category metrics (weak/normal/elite/boss)."""
+    metrics: dict[str, str] = {}
+    for category in ("weak", "normal", "elite", "boss"):
+        wr = _custom_metric(result, f"{category}_win_rate_mean")
+        hp = _custom_metric(result, f"{category}_avg_hp_lost_mean")
+        cnt = _custom_metric(result, f"{category}_encounter_count_mean")
+        metrics[f"{category}_win_rate"] = _format_metric(wr)
+        metrics[f"{category}_avg_hp_lost"] = _format_metric(hp)
+        metrics[f"{category}_encounter_count"] = _format_metric(cnt)
+    return metrics
+
+
+def _custom_metric(result: dict[str, Any], key: str) -> Any:
+    custom_metrics = result.get("custom_metrics")
+    if isinstance(custom_metrics, dict) and key in custom_metrics:
+        return custom_metrics[key]
+
+    env_runners = result.get("env_runners")
+    if isinstance(env_runners, dict):
+        custom_metrics = env_runners.get("custom_metrics")
+        if isinstance(custom_metrics, dict) and key in custom_metrics:
+            return custom_metrics[key]
+        if key in env_runners:
+            return env_runners[key]
+
+    return None
+
+
+def _prefixed_custom_metrics(result: dict[str, Any], prefix: str) -> str:
+    metric_sources: list[dict[str, Any]] = []
+    custom_metrics = result.get("custom_metrics")
+    if isinstance(custom_metrics, dict):
+        metric_sources.append(custom_metrics)
+    env_runners = result.get("env_runners")
+    if isinstance(env_runners, dict):
+        env_custom_metrics = env_runners.get("custom_metrics")
+        if isinstance(env_custom_metrics, dict):
+            metric_sources.append(env_custom_metrics)
+        metric_sources.append(env_runners)
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for source in metric_sources:
+        for key, value in sorted(source.items()):
+            if not key.startswith(prefix):
+                continue
+            label = key[len(prefix):]
+            suffix = "_mean"
+            if not label.endswith(suffix):
+                continue
+            label = label[: -len(suffix)]
+            if label in seen:
+                continue
+            try:
+                if float(value) <= 0.0:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            seen.add(label)
+            items.append(f"{label}:{_format_metric(value)}")
+    return ",".join(items) if items else "n/a"
+
+
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{numeric:.2f}"
+
+
+def _nested_get(data: dict[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+# ---------------------------------------------------------------------------
+# Full verbose file log (always written regardless of console mode)
+# ---------------------------------------------------------------------------
+
+def _log_full_iteration(
+    *,
+    logger: logging.Logger,
+    result: dict[str, Any],
+    current_steps: int,
+    step_delta: int,
+    iteration_seconds: float,
+    reward: Any,
+    progress: dict[str, str],
+    combat: dict[str, str],
+    grouped: dict[str, str],
+) -> None:
+    """Always write full iteration details to the log file."""
+    sps = step_delta / iteration_seconds if iteration_seconds > 0 else 0.0
+    logger.info(
+        (
+            "RLlib iteration=%s env_steps=%d (+%d) iter_s=%.2f "
+            "steps/sec=%.1f reward_mean=%s "
+            "floor_mean=%s max_floor=%s boss_reached%%=%s "
+            "boss_killed%%=%s act2%%=%s combat_win_rate=%s "
+            "combat_loss_rate=%s combat_timeout_rate=%s avg_combat_steps=%s "
+            "avg_hp_lost=%s "
+            "weak_wr=%s normal_wr=%s elite_wr=%s boss_wr=%s "
+            "encounters=%s reasons=%s"
+        ),
+        result.get("training_iteration"),
+        current_steps,
+        step_delta,
+        iteration_seconds,
+        sps,
+        reward,
+        progress["floor_mean"],
+        progress["max_floor"],
+        progress["boss_reached_pct"],
+        progress["boss_killed_pct"],
+        progress["act2_pct"],
+        combat["combat_win_rate"],
+        combat["combat_loss_rate"],
+        combat["combat_timeout_rate"],
+        combat["avg_combat_steps"],
+        combat["avg_hp_lost"],
+        grouped.get("weak_win_rate", "n/a"),
+        grouped.get("normal_win_rate", "n/a"),
+        grouped.get("elite_win_rate", "n/a"),
+        grouped.get("boss_win_rate", "n/a"),
+        combat["encounters"],
+        combat["terminated_reasons"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Eval helpers
+# ---------------------------------------------------------------------------
+
 def _run_random_combat_baseline(
     *,
     env_config: dict[str, Any],
@@ -1204,6 +854,8 @@ def _run_random_combat_baseline(
         if len(valid) == 0:
             return 0
         return int(rng.choice(valid))
+
+    from rllib.env_wrapper import make_sts_rllib_env
 
     metrics = _run_manual_combat_eval(
         env_config=env_config,
@@ -1280,6 +932,9 @@ def _run_manual_combat_eval(
     worker_id: int,
     action_selector: Any,
 ) -> dict[str, Any]:
+    from rllib.env_wrapper import make_sts_rllib_env
+    from rllib.progress_metrics import classify_encounter
+
     config = dict(env_config)
     config["worker_id"] = worker_id
     config["sts2_curriculum_mode"] = "combat"
@@ -1322,10 +977,13 @@ def _new_combat_eval_stats() -> dict[str, Any]:
         "steps": 0.0,
         "hp_lost": 0.0,
         "by_encounter": {},
+        "by_category": {},
     }
 
 
 def _record_combat_eval_episode(stats: dict[str, Any], info: Any) -> None:
+    from rllib.progress_metrics import classify_encounter
+
     progress = {}
     if isinstance(info, dict) and isinstance(info.get("progress_metrics"), dict):
         progress = info["progress_metrics"]
@@ -1336,6 +994,7 @@ def _record_combat_eval_episode(stats: dict[str, Any], info: Any) -> None:
     encounter = str(progress.get("encounter_id") or "unknown")
     steps = _safe_number(progress.get("combat_steps"))
     hp_lost = _safe_number(progress.get("hp_lost"))
+    category = classify_encounter(encounter)
 
     stats["episodes"] += 1
     stats["wins"] += float(reason == "win")
@@ -1353,10 +1012,20 @@ def _record_combat_eval_episode(stats: dict[str, Any], info: Any) -> None:
     by_encounter["steps"] += steps
     by_encounter["hp_lost"] += hp_lost
 
+    # Category-level grouping
+    by_category = stats["by_category"].setdefault(
+        category,
+        {"episodes": 0, "wins": 0.0, "steps": 0.0, "hp_lost": 0.0},
+    )
+    by_category["episodes"] += 1
+    by_category["wins"] += float(reason == "win")
+    by_category["steps"] += steps
+    by_category["hp_lost"] += hp_lost
+
 
 def _finalize_combat_eval_stats(stats: dict[str, Any]) -> dict[str, Any]:
     episodes = max(1, int(stats["episodes"]))
-    return {
+    result: dict[str, Any] = {
         "episodes": int(stats["episodes"]),
         "combat_win_rate": float(stats["wins"]) / episodes,
         "combat_loss_rate": float(stats["losses"]) / episodes,
@@ -1367,6 +1036,19 @@ def _finalize_combat_eval_stats(stats: dict[str, Any]) -> dict[str, Any]:
         "avg_hp_lost_by_encounter": _format_by_encounter(stats, "hp_lost", "episodes"),
         "avg_steps_by_encounter": _format_by_encounter(stats, "steps", "episodes"),
     }
+
+    # Grouped category metrics
+    grouped: dict[str, Any] = {}
+    for cat in ("weak", "normal", "elite", "boss"):
+        cat_stats = stats.get("by_category", {}).get(cat, {})
+        cat_episodes = max(1, int(cat_stats.get("episodes", 0)))
+        cat_any = int(cat_stats.get("episodes", 0)) > 0
+        grouped[f"{cat}_win_rate"] = float(cat_stats.get("wins", 0.0)) / cat_episodes if cat_any else None
+        grouped[f"{cat}_avg_hp_lost"] = float(cat_stats.get("hp_lost", 0.0)) / cat_episodes if cat_any else None
+        grouped[f"{cat}_episodes"] = int(cat_stats.get("episodes", 0))
+    result["grouped_metrics"] = grouped
+
+    return result
 
 
 def _format_by_encounter(
@@ -1391,127 +1073,9 @@ def _safe_number(value: Any) -> float:
         return 0.0
 
 
-def _result_env_step_delta(
-    result: dict[str, Any],
-    *,
-    previous_steps: int,
-    current_steps: int,
-) -> int:
-    candidates = (
-        result.get("num_env_steps_sampled_this_iter"),
-        result.get("timesteps_this_iter"),
-        _nested_get(result, ("env_runners", "num_env_steps_sampled_this_iter")),
-        _nested_get(result, ("sampler_results", "num_env_steps_sampled")),
-    )
-    for value in candidates:
-        if value is not None:
-            return max(0, int(value))
-    return max(0, current_steps - previous_steps)
-
-
-def _progress_log_metrics(result: dict[str, Any]) -> dict[str, str]:
-    return {
-        "floor_mean": _format_metric(_custom_metric(result, "floor_mean")),
-        "max_floor": _format_metric(
-            _custom_metric(result, "max_floor_max")
-            if _custom_metric(result, "max_floor_max") is not None
-            else _custom_metric(result, "floor_max")
-        ),
-        "boss_reached_pct": _format_metric(_custom_metric(result, "boss_reached_pct_mean")),
-        "boss_killed_pct": _format_metric(_custom_metric(result, "boss_killed_pct_mean")),
-        "act2_pct": _format_metric(_custom_metric(result, "act2_pct_mean")),
-    }
-
-
-def _combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
-    return {
-        "combat_win_rate": _format_metric(_custom_metric(result, "combat_win_rate_mean")),
-        "combat_loss_rate": _format_metric(_custom_metric(result, "combat_loss_rate_mean")),
-        "combat_timeout_rate": _format_metric(
-            _custom_metric(result, "combat_timeout_rate_mean")
-        ),
-        "avg_combat_steps": _format_metric(_custom_metric(result, "avg_combat_steps_mean")),
-        "avg_hp_remaining_on_win": _format_metric(
-            _custom_metric(result, "avg_hp_remaining_on_win_mean")
-        ),
-        "avg_hp_lost": _format_metric(_custom_metric(result, "avg_hp_lost_mean")),
-        "avg_monster_hp_remaining_on_loss": _format_metric(
-            _custom_metric(result, "avg_monster_hp_remaining_on_loss_mean")
-        ),
-        "encounters": _prefixed_custom_metrics(result, "encounter_id_"),
-        "terminated_reasons": _prefixed_custom_metrics(result, "terminated_reason_"),
-    }
-
-
-def _custom_metric(result: dict[str, Any], key: str) -> Any:
-    custom_metrics = result.get("custom_metrics")
-    if isinstance(custom_metrics, dict) and key in custom_metrics:
-        return custom_metrics[key]
-
-    env_runners = result.get("env_runners")
-    if isinstance(env_runners, dict):
-        custom_metrics = env_runners.get("custom_metrics")
-        if isinstance(custom_metrics, dict) and key in custom_metrics:
-            return custom_metrics[key]
-        if key in env_runners:
-            return env_runners[key]
-
-    return None
-
-
-def _prefixed_custom_metrics(result: dict[str, Any], prefix: str) -> str:
-    metric_sources: list[dict[str, Any]] = []
-    custom_metrics = result.get("custom_metrics")
-    if isinstance(custom_metrics, dict):
-        metric_sources.append(custom_metrics)
-    env_runners = result.get("env_runners")
-    if isinstance(env_runners, dict):
-        env_custom_metrics = env_runners.get("custom_metrics")
-        if isinstance(env_custom_metrics, dict):
-            metric_sources.append(env_custom_metrics)
-        metric_sources.append(env_runners)
-
-    items: list[str] = []
-    seen: set[str] = set()
-    for source in metric_sources:
-        for key, value in sorted(source.items()):
-            if not key.startswith(prefix):
-                continue
-            label = key[len(prefix):]
-            suffix = "_mean"
-            if not label.endswith(suffix):
-                continue
-            label = label[: -len(suffix)]
-            if label in seen:
-                continue
-            try:
-                if float(value) <= 0.0:
-                    continue
-            except (TypeError, ValueError):
-                pass
-            seen.add(label)
-            items.append(f"{label}:{_format_metric(value)}")
-    return ",".join(items) if items else "n/a"
-
-
-def _format_metric(value: Any) -> str:
-    if value is None:
-        return "n/a"
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return f"{numeric:.2f}"
-
-
-def _nested_get(data: dict[str, Any], path: tuple[str, ...]) -> Any:
-    current: Any = data
-    for key in path:
-        if not isinstance(current, dict) or key not in current:
-            return None
-        current = current[key]
-    return current
-
+# ---------------------------------------------------------------------------
+# Heartbeat
+# ---------------------------------------------------------------------------
 
 class _TrainHeartbeat:
     """Background logger that makes long algo.train() calls visible."""

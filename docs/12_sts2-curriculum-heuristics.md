@@ -65,7 +65,67 @@ This uses the official `Sts2Headless` JSON protocol:
 start_run -> enter_room(type="combat", encounter="<id>")
 ```
 
-Example:
+### Quick Start with Presets
+
+The most common experiments can now be launched with a single `--preset` flag:
+
+```powershell
+# Smoke test (2 workers, 50k steps, fixed encounter)
+python rllib\train_rllib.py --preset combat_smoke_fixed --sts2-cli-path <path>
+
+# Real training (8 workers, 1M steps, act1 mixed pool)
+python rllib\train_rllib.py --preset combat_train_act1_mixed --sts2-cli-path <path>
+
+# Debug mode (1 worker, verbose logging, debug episodes)
+python rllib\train_rllib.py --preset combat_debug_fixed --sts2-cli-path <path>
+
+# Full run with heuristic
+python rllib\train_rllib.py --preset fullrun_ironclad_heuristic_hard --sts2-cli-path <path>
+```
+
+CLI flags override preset values:
+
+```powershell
+python rllib\train_rllib.py --preset combat_train_act1_mixed --sts2-cli-path <path> --workers 4
+```
+
+List available presets:
+
+```powershell
+python rllib\train_rllib.py --list-presets
+```
+
+Inspect resolved config without starting training:
+
+```powershell
+python rllib\train_rllib.py --preset combat_smoke_fixed --sts2-cli-path <path> --dry-run
+```
+
+### YAML Config Files
+
+For reusable custom configurations:
+
+```yaml
+# my_experiment.yaml
+game_version: "2"
+sts2_curriculum_mode: combat
+sts2_reward_mode: combat_sparse
+sts2_combat_enemy_pool: act1_mixed
+workers: 8
+timesteps: 2000000
+eval_combat_episodes: 500
+eval_combat_freq: 10
+```
+
+```powershell
+python rllib\train_rllib.py --config my_experiment.yaml --sts2-cli-path <path>
+```
+
+Resolution order: preset defaults < YAML file < CLI flags.
+
+### Manual Example (verbose flags)
+
+The original full-flag syntax still works:
 
 ```powershell
 python rllib\train_rllib.py `
@@ -147,6 +207,60 @@ the latest stderr tail.
 
 Deck randomization and per-character C1/C2 schedules are still later stages.
 
+## Console Output Modes
+
+The `--console` flag controls what appears on stdout during training:
+
+- **compact** (default for presets): Uses `rich` for a live-updating progress
+  bar and metrics table that replaces itself in-place. No scroll spam.
+- **verbose**: Full log lines with all metrics printed per iteration.
+- **quiet**: Only warnings and errors to console; everything goes to log files.
+
+In combat curriculum mode, compact shows: iter, steps, sps, reward,
+train win/loss/timeout, avg hp lost, avg combat steps, and grouped
+weak/normal/elite/boss win rates.
+
+In full-run mode, compact shows: iter, steps, sps, reward, floor_mean,
+max_floor, boss_reached%, boss_killed%, act2%.
+
+Full details always go to `train.log` and `metrics.jsonl` in the run folder
+regardless of console mode.
+
+## Grouped Combat Metrics
+
+Combat training metrics are aggregated by encounter category:
+
+- **weak**: encounters ending with `_WEAK`
+- **normal**: encounters ending with `_NORMAL`
+- **elite**: encounters ending with `_ELITE`
+- **boss**: encounters ending with `_BOSS`
+
+Grouped metrics include per-category win rate and average HP lost. These appear
+in the compact console, verbose logs, and `metrics.jsonl`. Per-encounter detail
+goes to `metrics.jsonl` and verbose mode.
+
+## Run Folders
+
+Each training run creates a timestamped directory under `runs/`:
+
+```text
+runs/20260702_203800_combat_c1_ironclad_starter_act1_mixed/
+  config.resolved.yaml   # full config snapshot
+  train.log              # complete training log
+  metrics.jsonl          # one JSON line per iteration
+  crashes/               # crash debug bundles (on-demand)
+```
+
+## Crash Debug Bundles
+
+The environment wrapper maintains a bounded ring buffer (last 50 actions).
+On crash, a bundle is saved to the run folder containing:
+
+- `last_actions.jsonl`: ring buffer with action, reward, encounter, step
+- `last_state.json`: current observation snapshot
+- `stderr_tail.txt`: last lines of STS2 process stderr
+- `config.resolved.yaml`: exact config used
+
 ## Integration Options
 
 ### Option A: Hard-Control Non-Combat
@@ -216,6 +330,10 @@ vs top-k non-combat mask
 Start with single-character Ironclad before multi-character:
 
 ```powershell
+# Using presets (recommended):
+python rllib\train_rllib.py --preset combat_train_act1_mixed --sts2-cli-path <path>
+
+# Using manual flags:
 python rllib\train_rllib.py `
   --game-version 2 `
   --sts2-cli-path dotnet `
@@ -242,6 +360,7 @@ Primary metrics:
 - `act2%`
 - `steps/sec`
 - watchdog and process-recycle frequency
+- `weak_win_rate`, `normal_win_rate`, `elite_win_rate`, `boss_win_rate`
 
 ## Later Curriculum Direction
 
@@ -257,3 +376,4 @@ memory/process stability
 -> behavior cloning from heuristic labels
 -> multi-character expansion
 ```
+
