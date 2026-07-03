@@ -162,6 +162,7 @@ python rllib\train_rllib.py --preset combat_train_act1_mixed `
 | `combat_smoke_fixed` | combat | fixed | 2 | 50K | compact |
 | `combat_debug_fixed` | combat | fixed | 1 | 10K | verbose |
 | `combat_train_act1_mixed` | combat | act1_mixed | 8 | 1M | compact |
+| `combat_train_all_mixed` | combat | all_mixed | 8 | 1M | compact |
 | `combat_eval_act1_mixed` | combat | act1_mixed | 1 | 0 | compact |
 | `fullrun_ironclad` | full_run | n/a | 8 | 10M | compact |
 | `fullrun_ironclad_heuristic_hard` | full_run | n/a | 8 | 10M | compact |

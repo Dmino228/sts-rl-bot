@@ -78,6 +78,27 @@ PRESETS: dict[str, dict[str, Any]] = {
         "character": "Ironclad",
         "deck_mode": "starter",
     },
+    # ---- combat: real training on all acts mixed pool with randomized controlled deck ----
+    "combat_train_all_mixed": {
+        "game_version": "2",
+        "sts2_curriculum_mode": "combat",
+        "sts2_reward_mode": "combat_sparse",
+        "sts2_combat_enemy_pool": "all_mixed",
+        "training_stage": "combat_c2_ironclad_random_all_mixed",
+        "workers": 8,
+        "envs_per_worker": 1,
+        "timesteps": 1_000_000,
+        "eval_combat_episodes": 0,
+        "eval_combat_freq": 10,
+        "eval_combat_deterministic": True,
+        "eval_random_baseline": 0,
+        "eval_random_baseline_freq": 0,
+        "checkpoint_freq": 10,
+        "console_mode": "compact",
+        "character": "Ironclad",
+        "deck_mode": "random_controlled",
+        "enemy_pool": "all",
+    },
     # ---- combat: eval-only on act1 mixed (no training steps) ----
     "combat_eval_act1_mixed": {
         "game_version": "2",

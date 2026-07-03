@@ -52,6 +52,12 @@ COMBAT_ENEMY_POOLS: dict[str, tuple[str, ...]] = {
         *ACT1_ELITE_ENCOUNTERS,
         *ACT1_BOSS_ENCOUNTERS,
     ),
+    "all_mixed": (
+        *ACT1_HALLWAY_ENCOUNTERS,
+        *ACT1_HALLWAY_ENCOUNTERS,
+        *ACT1_ELITE_ENCOUNTERS,
+        *ACT1_BOSS_ENCOUNTERS,
+    ),
 }
 
 

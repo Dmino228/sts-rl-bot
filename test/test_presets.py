@@ -60,6 +60,13 @@ class TestPresets:
                 preset = load_preset(name)
                 assert preset["sts2_curriculum_mode"] == "full_run"
 
+    def test_combat_train_all_mixed_preset_properties(self) -> None:
+        preset = load_preset("combat_train_all_mixed")
+        assert preset["sts2_combat_enemy_pool"] == "all_mixed"
+        assert preset["deck_mode"] == "random_controlled"
+        assert preset["enemy_pool"] == "all"
+
+
 
 # ---------------------------------------------------------------------------
 # Merge tests
