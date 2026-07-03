@@ -72,6 +72,22 @@ class TestPresets:
         assert preset["deck_mode"] == "random_controlled"
         assert preset["enemy_pool"] == "all"
 
+    def test_combat_debug_act1_mixed_random_deck_preset_properties(self) -> None:
+        preset = load_preset("combat_debug_act1_mixed_random_deck")
+        assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
+        assert preset["deck_mode"] == "random_controlled"
+        assert preset["enemy_pool"] == "act1"
+        assert preset["workers"] == 1
+        assert preset["console_mode"] == "verbose"
+
+    def test_combat_debug_all_mixed_random_deck_preset_properties(self) -> None:
+        preset = load_preset("combat_debug_all_mixed_random_deck")
+        assert preset["sts2_combat_enemy_pool"] == "all_mixed"
+        assert preset["deck_mode"] == "random_controlled"
+        assert preset["enemy_pool"] == "all"
+        assert preset["workers"] == 1
+        assert preset["console_mode"] == "verbose"
+
 
 
 
