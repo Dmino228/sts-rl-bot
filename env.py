@@ -1,5 +1,8 @@
 """Game-version router exposed as a Gymnasium environment."""
 
+import json
+import os
+import time
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -75,6 +78,8 @@ class SlayTheSpireEnv(gym.Env):
         sts2_combat_action_penalty: float = 0.001,
         sts2_debug_episodes: int = 0,
         sts2_seed: Optional[int | str] = None,
+        deck_mode: str = "",
+        sts2_debug_jsonl_path: Optional[str] = None,
     ) -> None:
         super().__init__()
 
@@ -154,9 +159,13 @@ class SlayTheSpireEnv(gym.Env):
         self.sts2_combat_action_penalty = float(sts2_combat_action_penalty)
         self.sts2_debug_episodes = max(0, int(sts2_debug_episodes))
         self.sts2_seed = sts2_seed
+        self.deck_mode = str(deck_mode or "").strip().lower() or "unspecified"
+        self.sts2_debug_jsonl_path = str(sts2_debug_jsonl_path or "").strip()
+        self._debug_jsonl_failed = False
         self._episode_index = 0
         self._combat_initial_hp: Optional[int] = None
         self._combat_initial_monster_hp: Optional[int] = None
+        self._last_combat_reset_debug: Dict[str, Any] = {}
         self._last_reward_parts: Dict[str, float] = {}
         self._last_done_reason = ""
         self._last_action_id: Optional[int] = None
@@ -293,6 +302,10 @@ class SlayTheSpireEnv(gym.Env):
         self._episode_index += 1
         self._reset_combat_episode_tracking()
         self._recent_combat_trace.clear()
+        self._last_combat_reset_debug = {}
+        if self._is_combat_curriculum():
+            self._last_combat_reset_debug = self._build_combat_reset_debug()
+            self._maybe_log_combat_reset_debug()
 
         obs = self.state_encoder.encode(self.current_state)
         mask = self._refresh_action_mask()
@@ -472,6 +485,8 @@ class SlayTheSpireEnv(gym.Env):
         if self.include_action_mask_in_info:
             info["action_mask"] = mask if mask is not None else self.get_action_mask()
         info["progress_metrics"] = self._progress_metrics()
+        if self._last_combat_reset_debug:
+            info["combat_reset"] = self._last_combat_reset_debug
         return info
 
     def _progress_metrics(self) -> Dict[str, Any]:
@@ -636,6 +651,53 @@ class SlayTheSpireEnv(gym.Env):
                     return monsters
         return []
 
+    def _state_player(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        player = state.get("player")
+        if isinstance(player, dict):
+            return player
+        game_state = state.get("game_state", {})
+        if isinstance(game_state, dict):
+            combat_state = game_state.get("combat_state", {})
+            if isinstance(combat_state, dict) and isinstance(combat_state.get("player"), dict):
+                return combat_state["player"]
+        return {}
+
+    def _state_deck(self, state: Dict[str, Any]) -> List[Any]:
+        player = self._state_player(state)
+        if isinstance(player.get("deck"), list):
+            return player["deck"]
+        game_state = state.get("game_state", {})
+        if isinstance(game_state, dict) and isinstance(game_state.get("deck"), list):
+            return game_state["deck"]
+        return []
+
+    def _state_named_list(self, state: Dict[str, Any], key: str) -> List[Any]:
+        player = self._state_player(state)
+        if isinstance(player.get(key), list):
+            return player[key]
+        game_state = state.get("game_state", {})
+        if isinstance(game_state, dict) and isinstance(game_state.get(key), list):
+            return game_state[key]
+        return []
+
+    def _pile_size(self, state: Dict[str, Any], key: str) -> Optional[int]:
+        found = self._find_nested_list(state, key)
+        return len(found) if found is not None else None
+
+    def _find_nested_list(self, value: Any, key: str, depth: int = 0) -> Optional[List[Any]]:
+        if depth > 4:
+            return None
+        if isinstance(value, dict):
+            direct = value.get(key)
+            if isinstance(direct, list):
+                return direct
+            for nested_key in ("game_state", "combat_state", "player", "piles"):
+                nested = value.get(nested_key)
+                found = self._find_nested_list(nested, key, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
     def _hand_debug(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         cards: List[Dict[str, Any]] = []
         for slot, card in enumerate(self._state_hand(state)[:10]):
@@ -671,6 +733,31 @@ class SlayTheSpireEnv(gym.Env):
         if slot is not None:
             result["slot"] = slot
         return result
+
+    def _deck_card_debug(self, card: Any, slot: int) -> Dict[str, Any]:
+        if not isinstance(card, dict):
+            return {"slot": slot, "missing": True, "value": card}
+        return {
+            "slot": slot,
+            "id": card.get("id"),
+            "name": card.get("name"),
+            "upgrades": self._safe_int(card.get("upgrades"), 1 if card.get("upgraded") else 0),
+            "upgraded": bool(card.get("upgraded") or self._safe_int(card.get("upgrades"), 0) > 0),
+            "cost": card.get("cost"),
+            "type": card.get("type"),
+            "rarity": card.get("rarity", card.get("rarity_key")),
+        }
+
+    def _named_object_debug(self, item: Any, slot: int) -> Dict[str, Any]:
+        if not isinstance(item, dict):
+            return {"slot": slot, "value": item}
+        return {
+            "slot": slot,
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "rarity": item.get("rarity", item.get("rarity_key")),
+            "target_type": item.get("target_type"),
+        }
 
     def _enemy_target_debug(self, enemy: Any, fallback_index: int) -> Dict[str, Any]:
         if not isinstance(enemy, dict):
@@ -1105,7 +1192,79 @@ class SlayTheSpireEnv(gym.Env):
             "encounter_pool": self.sts2_combat_enemy_pool,
             "encounter_pool_ids": list(self._combat_encounter_pool),
             "terminated_reason": reason,
+            "deck_mode": self.deck_mode,
+            "deck_source": self._deck_source(),
+            "deck_size": self._last_combat_reset_debug.get("deck_size", 0),
         }
+
+    def _build_combat_reset_debug(self) -> Dict[str, Any]:
+        game_state = self.current_state.get("game_state", {})
+        if not isinstance(game_state, dict):
+            game_state = {}
+        player = self._state_player(self.current_state)
+        deck = self._state_deck(self.current_state)
+        relics = self._state_named_list(self.current_state, "relics")
+        potions = self._state_named_list(self.current_state, "potions")
+        combat_state = game_state.get("combat_state", {})
+        if not isinstance(combat_state, dict):
+            combat_state = {}
+
+        current_hp = self._current_player_hp(game_state)
+        max_hp = self._current_player_max_hp(game_state)
+        if current_hp is None:
+            current_hp = self._safe_int(player.get("hp", player.get("current_hp")), 0)
+        if max_hp is None:
+            max_hp = self._safe_int(player.get("max_hp"), 0)
+
+        return {
+            "event": "combat_reset",
+            "worker_id": self.worker_id,
+            "episode": self._episode_index,
+            "encounter_id": self._current_combat_encounter,
+            "encounter_pool": self.sts2_combat_enemy_pool,
+            "deck_mode": self.deck_mode,
+            "deck_source": self._deck_source(),
+            "deck_size": self._safe_int(
+                player.get("deck_size", game_state.get("deck_size")),
+                len(deck),
+            ),
+            "deck": [self._deck_card_debug(card, slot) for slot, card in enumerate(deck)],
+            "draw_pile_size": self._pile_size(self.current_state, "draw_pile"),
+            "discard_pile_size": self._pile_size(self.current_state, "discard_pile"),
+            "exhaust_pile_size": self._pile_size(self.current_state, "exhaust_pile"),
+            "relics": [self._named_object_debug(item, slot) for slot, item in enumerate(relics)],
+            "potions": [self._named_object_debug(item, slot) for slot, item in enumerate(potions)],
+            "current_hp": current_hp,
+            "max_hp": max_hp,
+            "hand_size": len(self._state_hand(self.current_state)),
+            "monster_count": len(self._state_enemies(self.current_state)),
+            "turn": self._state_turn(self.current_state),
+            "timestamp_monotonic": time.monotonic(),
+        }
+
+    def _deck_source(self) -> str:
+        if self.deck_mode in {"", "unspecified", "starter"}:
+            return "sts2_start_run_default"
+        return f"{self.deck_mode}_requested_not_applied_using_sts2_start_run_default"
+
+    def _maybe_log_combat_reset_debug(self) -> None:
+        if self.sts2_debug_episodes <= 0 or self._episode_index > self.sts2_debug_episodes:
+            return
+        reset = self._last_combat_reset_debug
+        print(
+            "[STS2 COMBAT RESET] "
+            f"worker={self.worker_id} episode={self._episode_index} "
+            f"encounter={reset.get('encounter_id')} deck_mode={reset.get('deck_mode')} "
+            f"deck_source={reset.get('deck_source')} deck_size={reset.get('deck_size')} "
+            f"hp={reset.get('current_hp')}/{reset.get('max_hp')} "
+            f"draw={reset.get('draw_pile_size')} discard={reset.get('discard_pile_size')} "
+            f"exhaust={reset.get('exhaust_pile_size')} "
+            f"deck={[card.get('name', card.get('id')) for card in reset.get('deck', [])]} "
+            f"relics={[item.get('name', item.get('id')) for item in reset.get('relics', [])]} "
+            f"potions={[item.get('name', item.get('id')) for item in reset.get('potions', [])]}",
+            file=sys.stderr,
+        )
+        self._append_debug_jsonl(reset)
 
     def _maybe_log_debug_episode(
         self,
@@ -1138,6 +1297,44 @@ class SlayTheSpireEnv(gym.Env):
             f"terminated={terminated} truncated={truncated}",
             file=sys.stderr,
         )
+        self._append_debug_jsonl(
+            {
+                "event": "combat_step",
+                "worker_id": self.worker_id,
+                "episode": self._episode_index,
+                "encounter_id": self._current_combat_encounter,
+                "step": self.combat_step_count,
+                "turn": self._state_turn(self.current_state),
+                "hp": player.get("current_hp", game_state.get("current_hp")),
+                "block": player.get("block"),
+                "energy": player.get("energy"),
+                "hand": self._hand_debug(self.current_state),
+                "monsters": self._monster_debug(monsters),
+                "action_id": self._last_action_id,
+                "action": self._last_action_summary,
+                "command": self._last_action_command,
+                "reward": float(reward),
+                "reward_parts": dict(self._last_reward_parts),
+                "done_reason": self._last_done_reason or "ongoing",
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+                "timestamp_monotonic": time.monotonic(),
+            }
+        )
+
+    def _append_debug_jsonl(self, payload: Dict[str, Any]) -> None:
+        if not self.sts2_debug_jsonl_path or self._debug_jsonl_failed:
+            return
+        try:
+            parent = os.path.dirname(os.path.abspath(self.sts2_debug_jsonl_path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(self.sts2_debug_jsonl_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, default=str))
+                handle.write("\n")
+        except Exception as exc:
+            self._debug_jsonl_failed = True
+            print(f"[STS2 DEBUG] Could not write JSONL debug event: {exc}", file=sys.stderr)
 
     @staticmethod
     def _monster_debug(monsters: Any) -> List[Dict[str, Any]]:

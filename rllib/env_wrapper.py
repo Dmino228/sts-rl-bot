@@ -304,6 +304,10 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         ),
         sts2_debug_episodes=int(_config_value(env_config, "sts2_debug_episodes", 0)),
         sts2_seed=_config_value(env_config, "sts2_seed", None),
+        deck_mode=str(_config_value(env_config, "deck_mode", "")),
+        sts2_debug_jsonl_path=_optional_str(
+            _config_value(env_config, "sts2_debug_jsonl_path", "")
+        ),
     )
     heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
     return RLLibActionMaskEnv(

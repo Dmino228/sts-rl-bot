@@ -60,33 +60,38 @@ class TestPresets:
                 preset = load_preset(name)
                 assert preset["sts2_curriculum_mode"] == "full_run"
 
-    def test_combat_train_act1_mixed_random_deck_preset_properties(self) -> None:
-        preset = load_preset("combat_train_act1_mixed_random_deck")
+    def test_combat_train_act1_mixed_starter_deck_preset_properties(self) -> None:
+        preset = load_preset("combat_train_act1_mixed_starter_deck")
         assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
-        assert preset["deck_mode"] == "random_controlled"
+        assert preset["deck_mode"] == "starter"
         assert preset["enemy_pool"] == "act1"
 
-    def test_combat_train_all_mixed_random_deck_preset_properties(self) -> None:
-        preset = load_preset("combat_train_all_mixed_random_deck")
+    def test_combat_train_all_mixed_starter_deck_preset_properties(self) -> None:
+        preset = load_preset("combat_train_all_mixed_starter_deck")
         assert preset["sts2_combat_enemy_pool"] == "all_mixed"
-        assert preset["deck_mode"] == "random_controlled"
+        assert preset["deck_mode"] == "starter"
         assert preset["enemy_pool"] == "all"
 
-    def test_combat_debug_act1_mixed_random_deck_preset_properties(self) -> None:
-        preset = load_preset("combat_debug_act1_mixed_random_deck")
+    def test_combat_debug_act1_mixed_starter_deck_preset_properties(self) -> None:
+        preset = load_preset("combat_debug_act1_mixed_starter_deck")
         assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
-        assert preset["deck_mode"] == "random_controlled"
+        assert preset["deck_mode"] == "starter"
         assert preset["enemy_pool"] == "act1"
         assert preset["workers"] == 1
         assert preset["console_mode"] == "verbose"
 
-    def test_combat_debug_all_mixed_random_deck_preset_properties(self) -> None:
-        preset = load_preset("combat_debug_all_mixed_random_deck")
+    def test_combat_debug_all_mixed_starter_deck_preset_properties(self) -> None:
+        preset = load_preset("combat_debug_all_mixed_starter_deck")
         assert preset["sts2_combat_enemy_pool"] == "all_mixed"
-        assert preset["deck_mode"] == "random_controlled"
+        assert preset["deck_mode"] == "starter"
         assert preset["enemy_pool"] == "all"
         assert preset["workers"] == 1
         assert preset["console_mode"] == "verbose"
+
+    def test_random_deck_presets_are_not_advertised_before_implementation(self) -> None:
+        names = list_presets()
+        assert all("random_deck" not in name for name in names)
+        assert all(preset.get("deck_mode") != "random_controlled" for preset in PRESETS.values())
 
 
 

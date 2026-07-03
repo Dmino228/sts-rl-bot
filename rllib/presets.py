@@ -58,13 +58,13 @@ PRESETS: dict[str, dict[str, Any]] = {
         "character": "Ironclad",
         "deck_mode": "starter",
     },
-    # ---- combat: debug with verbose logging + debug episodes on act1 mixed pool with random deck ----
-    "combat_debug_act1_mixed_random_deck": {
+    # ---- combat: debug with verbose logging + debug episodes on act1 mixed pool with starter deck ----
+    "combat_debug_act1_mixed_starter_deck": {
         "game_version": "2",
         "sts2_curriculum_mode": "combat",
         "sts2_reward_mode": "combat_sparse",
         "sts2_combat_enemy_pool": "act1_mixed",
-        "training_stage": "debug_combat_act1_mixed_random_deck",
+        "training_stage": "debug_combat_act1_mixed_starter_deck",
         "workers": 1,
         "envs_per_worker": 1,
         "timesteps": 10_000,
@@ -75,16 +75,16 @@ PRESETS: dict[str, dict[str, Any]] = {
         "sts2_debug_episodes": 3,
         "console_mode": "verbose",
         "character": "Ironclad",
-        "deck_mode": "random_controlled",
+        "deck_mode": "starter",
         "enemy_pool": "act1",
     },
-    # ---- combat: debug with verbose logging + debug episodes on all acts mixed pool with random deck ----
-    "combat_debug_all_mixed_random_deck": {
+    # ---- combat: debug with verbose logging + debug episodes on all acts mixed pool with starter deck ----
+    "combat_debug_all_mixed_starter_deck": {
         "game_version": "2",
         "sts2_curriculum_mode": "combat",
         "sts2_reward_mode": "combat_sparse",
         "sts2_combat_enemy_pool": "all_mixed",
-        "training_stage": "debug_combat_all_mixed_random_deck",
+        "training_stage": "debug_combat_all_mixed_starter_deck",
         "workers": 1,
         "envs_per_worker": 1,
         "timesteps": 10_000,
@@ -95,7 +95,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "sts2_debug_episodes": 3,
         "console_mode": "verbose",
         "character": "Ironclad",
-        "deck_mode": "random_controlled",
+        "deck_mode": "starter",
         "enemy_pool": "all",
     },
     # ---- combat: real training on act1 mixed pool (starter deck) ----
@@ -118,13 +118,13 @@ PRESETS: dict[str, dict[str, Any]] = {
         "character": "Ironclad",
         "deck_mode": "starter",
     },
-    # ---- combat: real training on act1 mixed pool with randomized controlled deck ----
-    "combat_train_act1_mixed_random_deck": {
+    # ---- combat: real training on act1 mixed pool with explicit starter deck metadata ----
+    "combat_train_act1_mixed_starter_deck": {
         "game_version": "2",
         "sts2_curriculum_mode": "combat",
         "sts2_reward_mode": "combat_sparse",
         "sts2_combat_enemy_pool": "act1_mixed",
-        "training_stage": "combat_c2_ironclad_random_act1_mixed",
+        "training_stage": "combat_c1_ironclad_starter_act1_mixed",
         "workers": 8,
         "envs_per_worker": 1,
         "timesteps": 1_000_000,
@@ -136,16 +136,16 @@ PRESETS: dict[str, dict[str, Any]] = {
         "checkpoint_freq": 10,
         "console_mode": "compact",
         "character": "Ironclad",
-        "deck_mode": "random_controlled",
+        "deck_mode": "starter",
         "enemy_pool": "act1",
     },
-    # ---- combat: real training on all acts mixed pool with randomized controlled deck ----
-    "combat_train_all_mixed_random_deck": {
+    # ---- combat: real training on all acts mixed pool with starter deck ----
+    "combat_train_all_mixed_starter_deck": {
         "game_version": "2",
         "sts2_curriculum_mode": "combat",
         "sts2_reward_mode": "combat_sparse",
         "sts2_combat_enemy_pool": "all_mixed",
-        "training_stage": "combat_c2_ironclad_random_all_mixed",
+        "training_stage": "combat_c1_ironclad_starter_all_mixed",
         "workers": 8,
         "envs_per_worker": 1,
         "timesteps": 1_000_000,
@@ -157,7 +157,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "checkpoint_freq": 10,
         "console_mode": "compact",
         "character": "Ironclad",
-        "deck_mode": "random_controlled",
+        "deck_mode": "starter",
         "enemy_pool": "all",
     },
     # ---- combat: eval-only on act1 mixed (no training steps) ----

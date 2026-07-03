@@ -296,6 +296,12 @@ def build_env_config(config: dict[str, Any]) -> dict[str, Any]:
             config.get("sts2_combat_action_penalty", 0.001) or 0.001
         ),
         "sts2_debug_episodes": int(config.get("sts2_debug_episodes", 0) or 0),
+        "sts2_debug_jsonl_path": (
+            os.path.join(str(config.get("_run_folder_path") or ""), "debug_episodes.jsonl")
+            if config.get("_run_folder_path")
+            else ""
+        ),
+        "deck_mode": config.get("deck_mode", ""),
         "process_timeout": float(config.get("process_timeout_s", 120.0) or 120.0),
         "ascension": int(config.get("ascension", 0) or 0),
         "sts2_lang": config.get("sts2_lang", "en"),

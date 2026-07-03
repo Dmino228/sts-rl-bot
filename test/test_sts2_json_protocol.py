@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -557,6 +558,43 @@ def test_env_reset_sts2_combat_curriculum_enters_encounter():
     ]
     assert obs.shape == (349,)
     assert info["action_mask"][TARGETED_PLAY_BASE] == 1
+    env.close()
+
+
+def test_env_reset_sts2_combat_debug_reports_actual_deck_snapshot(tmp_path):
+    debug_path = tmp_path / "debug_episodes.jsonl"
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        sts2_debug_episodes=1,
+        deck_mode="starter",
+        sts2_debug_jsonl_path=str(debug_path),
+    )
+    fake_manager = FakeStS2ProcessManager([_map_decision(), _combat_decision()])
+    env.process_manager = fake_manager
+
+    _obs, info = env.reset(seed=123)
+
+    reset = info["combat_reset"]
+    assert reset["event"] == "combat_reset"
+    assert reset["deck_mode"] == "starter"
+    assert reset["deck_source"] == "sts2_start_run_default"
+    assert reset["deck_size"] == 10
+    assert reset["deck"][0]["name"] == "Strike"
+    assert reset["deck"][0]["upgrades"] == 1
+    assert reset["relics"][0]["name"] == "Burning Blood"
+    assert reset["potions"][0]["name"] == "Block Potion"
+    assert reset["current_hp"] == 70
+    assert reset["max_hp"] == 80
+    assert reset["encounter_id"] == "SHRINKER_BEETLE_WEAK"
+
+    lines = debug_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["event"] == "combat_reset"
+    assert payload["deck"][0]["name"] == "Strike"
     env.close()
 
 

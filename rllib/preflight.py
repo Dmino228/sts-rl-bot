@@ -22,6 +22,7 @@ def run_preflight(
         _validate_sts2_executable(config, logger)
         _validate_enemy_pool_non_empty(config, logger)
         _warn_combat_mode_with_full_reward(config, logger)
+        _warn_unsupported_deck_mode(config, logger)
         _warn_expensive_eval(config, logger)
 
     _warn_worker_count(config, game_key, logger)
@@ -95,6 +96,21 @@ def _warn_combat_mode_with_full_reward(
         )
 
 
+def _warn_unsupported_deck_mode(
+    config: dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Warn when deck_mode is currently metadata-only."""
+    deck_mode = str(config.get("deck_mode", "") or "").strip().lower()
+    if deck_mode and deck_mode not in {"starter", "unspecified"}:
+        logger.warning(
+            "Deck mode %r is not implemented yet for StS2 Headless. "
+            "Training will use the deck returned by start_run unless a future "
+            "deck injection step is added before enter_room.",
+            deck_mode,
+        )
+
+
 def _warn_expensive_eval(
     config: dict[str, Any],
     logger: logging.Logger,
@@ -164,6 +180,7 @@ def _print_experiment_summary(
             f"  Curriculum mode:     {config.get('sts2_curriculum_mode', 'full_run')}",
             f"  Reward mode:         {config.get('sts2_reward_mode', 'full_v3_2')}",
             f"  Enemy pool:          {config.get('sts2_combat_enemy_pool', 'fixed')}",
+            f"  Deck mode:           {config.get('deck_mode', 'unspecified') or 'unspecified'}",
             f"  Heuristic mode:      {config.get('heuristic_mode', 'none')}",
         ])
 

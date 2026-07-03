@@ -165,7 +165,11 @@ Debugging:
 --sts2-debug-episodes 3
 ```
 
-logs detailed per-step combat state for the first N episodes per worker.
+logs a reset-time snapshot and detailed per-step combat state for the first N
+episodes per worker. The reset snapshot includes the resolved deck mode, deck
+source, full deck card IDs/names/upgrades, pile sizes, relics, potions, current
+HP, max HP, and selected encounter. These events are written to
+`debug_episodes.jsonl` in the run folder.
 
 Encounter pools:
 
@@ -206,6 +210,8 @@ IDs/names/costs/playability, selected card/target, a bounded recent trace, and
 the latest stderr tail.
 
 Deck randomization and per-character C1/C2 schedules are still later stages.
+Do not call a deck mode realistic until it is generated from real full-run
+combat snapshots or from a floor-conditioned Act 1 deck model.
 
 ## Console Output Modes
 
@@ -248,6 +254,7 @@ runs/20260702_203800_combat_c1_ironclad_starter_act1_mixed/
   config.resolved.yaml   # full config snapshot
   train.log              # complete training log
   metrics.jsonl          # one JSON line per iteration
+  debug_episodes.jsonl   # reset deck snapshots and step debug events
   crashes/               # crash debug bundles (on-demand)
 ```
 
@@ -376,4 +383,3 @@ memory/process stability
 -> behavior cloning from heuristic labels
 -> multi-character expansion
 ```
-
