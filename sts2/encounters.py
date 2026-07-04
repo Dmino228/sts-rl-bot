@@ -7,21 +7,29 @@ from typing import Iterable
 
 FIXED_DEFAULT_ENCOUNTER = "SHRINKER_BEETLE_WEAK"
 
-# STS2 Act 1 is Overgrowth in the current sts2-cli build. Keep these lists
-# explicit so curriculum experiments are reproducible across training runs.
-ACT1_HALLWAY_ENCOUNTERS: tuple[str, ...] = (
+ACT1_WEAK_ENCOUNTERS: tuple[str, ...] = (
     "SHRINKER_BEETLE_WEAK",
     "TOADPOLES_WEAK",
     "FUZZY_WURM_CRAWLER_WEAK",
     "SLUDGE_SPINNER_WEAK",
     "THIEVING_HOPPER_WEAK",
     "TUNNELER_WEAK",
+)
+
+ACT1_NORMAL_ENCOUNTERS: tuple[str, ...] = (
     "FLYCONID_NORMAL",
     "OVERGROWTH_CRAWLERS",
     "CHOMPERS_NORMAL",
     "SLUMBERING_BEETLE_NORMAL",
     "SPINY_TOAD_NORMAL",
     "VINE_SHAMBLER_NORMAL",
+)
+
+# STS2 Act 1 is Overgrowth in the current sts2-cli build. Keep these lists
+# explicit so curriculum experiments are reproducible across training runs.
+ACT1_HALLWAY_ENCOUNTERS: tuple[str, ...] = (
+    *ACT1_WEAK_ENCOUNTERS,
+    *ACT1_NORMAL_ENCOUNTERS,
 )
 
 ACT1_ELITE_ENCOUNTERS: tuple[str, ...] = (
@@ -118,6 +126,8 @@ ACT3_BOSS_ENCOUNTERS: tuple[str, ...] = (
 
 COMBAT_ENEMY_POOLS: dict[str, tuple[str, ...]] = {
     "fixed": (FIXED_DEFAULT_ENCOUNTER,),
+    "act1_weak": ACT1_WEAK_ENCOUNTERS,
+    "act1_normal": ACT1_NORMAL_ENCOUNTERS,
     "act1_hallway": ACT1_HALLWAY_ENCOUNTERS,
     "act1_elite": ACT1_ELITE_ENCOUNTERS,
     "act1_boss": ACT1_BOSS_ENCOUNTERS,

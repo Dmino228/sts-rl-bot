@@ -108,6 +108,50 @@ class TestPresets:
         assert preset["workers"] == 1
         assert preset["console_mode"] == "verbose"
 
+    def test_combat_train_act1_categories_presets_properties(self) -> None:
+        for cat in ("weak", "normal", "elite", "boss"):
+            preset = load_preset(f"combat_train_act1_{cat}_starter_deck")
+            assert preset["sts2_combat_enemy_pool"] == f"act1_{cat}"
+            assert preset["deck_mode"] == "starter"
+            assert preset["enemy_pool"] == "act1"
+
+            preset_no_deck = load_preset(f"combat_train_act1_{cat}")
+            assert preset_no_deck["sts2_combat_enemy_pool"] == f"act1_{cat}"
+            assert preset_no_deck["deck_mode"] == "starter"
+            assert "enemy_pool" not in preset_no_deck
+
+    def test_combat_debug_act1_categories_presets_properties(self) -> None:
+        for cat in ("weak", "normal", "elite", "boss"):
+            preset = load_preset(f"combat_debug_act1_{cat}_starter_deck")
+            assert preset["sts2_combat_enemy_pool"] == f"act1_{cat}"
+            assert preset["deck_mode"] == "starter"
+            assert preset["enemy_pool"] == "act1"
+            assert preset["workers"] == 1
+            assert preset["console_mode"] == "verbose"
+
+    def test_combat_train_act1_categories_random_synthetic_presets_properties(self) -> None:
+        for cat in ("weak", "normal", "elite", "boss"):
+            preset = load_preset(f"combat_train_act1_{cat}_random_synthetic")
+            assert preset["sts2_combat_enemy_pool"] == f"act1_{cat}"
+            assert preset["deck_mode"] == "random_synthetic"
+            assert preset["enemy_pool"] == "act1"
+
+    def test_combat_debug_act1_categories_random_synthetic_presets_properties(self) -> None:
+        for cat in ("weak", "normal", "elite", "boss"):
+            preset = load_preset(f"combat_debug_act1_{cat}_random_synthetic")
+            assert preset["sts2_combat_enemy_pool"] == f"act1_{cat}"
+            assert preset["deck_mode"] == "random_synthetic"
+            assert preset["enemy_pool"] == "act1"
+            assert preset["workers"] == 1
+            assert preset["console_mode"] == "verbose"
+
+    def test_combat_train_act1_categories_floor_bucket_presets_properties(self) -> None:
+        for cat in ("weak", "normal", "elite", "boss"):
+            preset = load_preset(f"combat_train_act1_{cat}_floor_bucket")
+            assert preset["sts2_combat_enemy_pool"] == f"act1_{cat}"
+            assert preset["deck_mode"] == "random_act1_floor_bucket"
+            assert preset["enemy_pool"] == "act1"
+
     def test_random_deck_presets_are_not_advertised_before_implementation(self) -> None:
         names = list_presets()
         assert all("random_deck" not in name for name in names)
