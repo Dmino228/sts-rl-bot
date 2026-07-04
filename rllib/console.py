@@ -185,8 +185,11 @@ class TrainingConsole:
             self._rich_Group = Group
             self._live = Live(
                 Group(self._progress, self._rich_table),
-                refresh_per_second=2,
-                transient=False,
+                refresh_per_second=1,
+                auto_refresh=False,
+                screen=True,
+                transient=True,
+                vertical_overflow="crop",
             )
             self._live.start()
         except ImportError:
@@ -269,7 +272,7 @@ class TrainingConsole:
 
         self._rich_table = table
         if self._live is not None:
-            self._live.update(Group(self._progress, table))
+            self._live.update(Group(self._progress, table), refresh=True)
 
     # ------------------------------------------------------------------
     # Verbose mode (original log lines)
