@@ -71,6 +71,10 @@ class ProgressMetricsCallback(DefaultCallbacks):
                 combat.get("monster_hp_remaining_on_loss"),
                 0.0,
             )
+            episode.custom_metrics["deck_size"] = _safe_float(
+                combat.get("deck_size"),
+                0.0,
+            )
             encounter = _metric_key(combat.get("encounter_id"))
             reason = _metric_key(combat.get("terminated_reason"))
             pool_ids = combat.get("encounter_pool_ids")
@@ -127,6 +131,9 @@ class ProgressMetricsCallback(DefaultCallbacks):
             "encounter_pool",
             "encounter_pool_ids",
             "terminated_reason",
+            "deck_mode",
+            "deck_source",
+            "deck_size",
         )
         if any(key in progress for key in combat_keys):
             combat = episode.user_data.setdefault("combat_metrics", {})

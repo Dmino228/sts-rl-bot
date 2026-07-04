@@ -72,10 +72,30 @@ class TestPresets:
         assert preset["deck_mode"] == "starter"
         assert preset["enemy_pool"] == "all"
 
+    def test_combat_train_act1_mixed_random_synthetic_preset_properties(self) -> None:
+        preset = load_preset("combat_train_act1_mixed_random_synthetic")
+        assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
+        assert preset["deck_mode"] == "random_synthetic"
+        assert preset["enemy_pool"] == "act1"
+
+    def test_combat_train_act1_mixed_floor_bucket_preset_properties(self) -> None:
+        preset = load_preset("combat_train_act1_mixed_floor_bucket")
+        assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
+        assert preset["deck_mode"] == "random_act1_floor_bucket"
+        assert preset["enemy_pool"] == "act1"
+
     def test_combat_debug_act1_mixed_starter_deck_preset_properties(self) -> None:
         preset = load_preset("combat_debug_act1_mixed_starter_deck")
         assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
         assert preset["deck_mode"] == "starter"
+        assert preset["enemy_pool"] == "act1"
+        assert preset["workers"] == 1
+        assert preset["console_mode"] == "verbose"
+
+    def test_combat_debug_act1_mixed_random_synthetic_preset_properties(self) -> None:
+        preset = load_preset("combat_debug_act1_mixed_random_synthetic")
+        assert preset["sts2_combat_enemy_pool"] == "act1_mixed"
+        assert preset["deck_mode"] == "random_synthetic"
         assert preset["enemy_pool"] == "act1"
         assert preset["workers"] == 1
         assert preset["console_mode"] == "verbose"

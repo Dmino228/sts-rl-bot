@@ -677,6 +677,8 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "sts2_debug_episodes": 2,
             "sts2_seed": 123456,
             "deck_mode": "starter",
+            "sts2_deck_duplicate_cap": 3,
+            "sts2_deck_allow_problematic_cards": True,
             "sts2_debug_jsonl_path": str(tmp_path / "debug_episodes.jsonl"),
         }
     )
@@ -697,6 +699,8 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
     assert captured_kwargs["sts2_debug_episodes"] == 2
     assert captured_kwargs["sts2_seed"] == 123456
     assert captured_kwargs["deck_mode"] == "starter"
+    assert captured_kwargs["sts2_deck_duplicate_cap"] == 3
+    assert captured_kwargs["sts2_deck_allow_problematic_cards"] is True
     assert captured_kwargs["sts2_debug_jsonl_path"].endswith("debug_episodes.jsonl")
 
 

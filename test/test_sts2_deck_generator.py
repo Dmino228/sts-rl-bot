@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+from collections import Counter
+
+from sts2.deck_generator import (
+    IRONCLAD_STARTER_DECK,
+    build_combat_deck_spec,
+    bare_model_id,
+)
+from sts2.spire_codex import SpireCodex
+
+
+def test_starter_mode_produces_exact_ironclad_starter_deck() -> None:
+    spec = build_combat_deck_spec(mode="starter", seed=123, worker_id=1, episode_id=1)
+
+    assert [card.id for card in spec.cards] == list(IRONCLAD_STARTER_DECK)
+    assert all(not card.upgraded for card in spec.cards)
+    assert spec.apply_to_headless is False
+    assert spec.source == "sts2_start_run_default"
+
+
+def test_random_synthetic_usually_contains_non_starter_cards() -> None:
+    non_starter_samples = 0
+    starter_ids = set(IRONCLAD_STARTER_DECK)
+    for episode in range(20):
+        spec = build_combat_deck_spec(
+            mode="random_synthetic",
+            seed=123,
+            worker_id=2,
+            episode_id=episode,
+        )
+        if any(card.id not in starter_ids for card in spec.cards):
+            non_starter_samples += 1
+
+    assert non_starter_samples >= 18
+
+
+def test_generated_card_ids_are_valid_in_spire_codex() -> None:
+    codex = SpireCodex()
+    spec = build_combat_deck_spec(
+        mode="random_synthetic",
+        seed=77,
+        worker_id=3,
+        episode_id=4,
+        codex=codex,
+    )
+
+    for card in spec.cards:
+        assert codex.get_card_index(bare_model_id(card.id, "CARD")) is not None
+
+
+def test_duplicate_cap_is_respected_for_non_starter_additions() -> None:
+    spec = build_combat_deck_spec(
+        mode="random_synthetic",
+        seed=7,
+        worker_id=1,
+        episode_id=1,
+        duplicate_cap=1,
+    )
+    added_counts = Counter(card.id for card in spec.added_cards)
+
+    assert added_counts
+    assert max(added_counts.values()) <= 1
+
+
+def test_same_seed_worker_episode_produces_same_deck() -> None:
+    a = build_combat_deck_spec(
+        mode="random_synthetic",
+        seed=123,
+        worker_id=1,
+        episode_id=9,
+    )
+    b = build_combat_deck_spec(
+        mode="random_synthetic",
+        seed=123,
+        worker_id=1,
+        episode_id=9,
+    )
+
+    assert a.to_debug() == b.to_debug()
+
+
+def test_different_episode_changes_random_synthetic_deck() -> None:
+    a = build_combat_deck_spec(
+        mode="random_synthetic",
+        seed=123,
+        worker_id=1,
+        episode_id=9,
+    )
+    b = build_combat_deck_spec(
+        mode="random_synthetic",
+        seed=123,
+        worker_id=1,
+        episode_id=10,
+    )
+
+    assert [card.to_debug() for card in a.cards] != [card.to_debug() for card in b.cards]
+
+
+def test_random_floor_bucket_logs_bucket_and_floor() -> None:
+    spec = build_combat_deck_spec(
+        mode="random_act1_floor_bucket",
+        seed=123,
+        worker_id=1,
+        episode_id=10,
+    )
+
+    assert spec.floor_bucket in {"early", "mid", "late"}
+    assert spec.synthetic_floor is not None
+    assert spec.apply_to_headless is True
+    assert 1 <= spec.synthetic_floor <= 16

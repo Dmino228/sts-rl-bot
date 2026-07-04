@@ -59,11 +59,29 @@ Useful flags:
 The first STS2 curriculum profile is intentionally small and disabled by
 default:
 
-This uses the official `Sts2Headless` JSON protocol:
+Starter-deck combat uses the official `Sts2Headless` JSON protocol:
 
 ```text
 start_run -> enter_room(type="combat", encounter="<id>")
 ```
+
+Non-starter combat deck modes insert a player-state setup step before combat:
+
+```text
+start_run -> set_player(deck/hp/relics/potions) -> enter_room(type="combat", encounter="<id>")
+```
+
+The generated deck must be applied to the actual `Sts2Headless` run state. It
+is not valid to only alter Python observations.
+
+Available combat deck modes:
+
+- `starter`: exact current Ironclad starter baseline from `start_run`.
+- `random_synthetic`: starter deck plus 3-8 legal Ironclad Act 1 reward cards,
+  limited Strike/Defend removals, limited upgrades, and duplicate caps.
+- `random_act1_floor_bucket`: synthetic early/mid/late Act 1 buckets with
+  floor-conditioned card additions, HP, removals, and upgrades. This is not
+  called realistic because it is not learned from real full-run snapshots.
 
 ### Quick Start with Presets
 
@@ -75,6 +93,9 @@ python rllib\train_rllib.py --preset combat_smoke_fixed --sts2-cli-path <path>
 
 # Real training (8 workers, 1M steps, act1 mixed pool)
 python rllib\train_rllib.py --preset combat_train_act1_mixed --sts2-cli-path <path>
+
+# Real training with synthetic random combat decks
+python rllib\train_rllib.py --preset combat_train_act1_mixed_random_synthetic --sts2-cli-path <path>
 
 # Debug mode (1 worker, verbose logging, debug episodes)
 python rllib\train_rllib.py --preset combat_debug_fixed --sts2-cli-path <path>
@@ -158,6 +179,10 @@ Reward modes:
 - `combat_dense`: terminal sparse reward plus small configurable damage dealt,
   HP lost, and action-penalty shaping. It never includes floor/relic/card/act
   completion rewards.
+
+Debug episodes log the selected encounter, enemy pool, deck mode/source/size,
+full deck, hand, added/removed/upgraded cards, relics, potions, HP, and pile
+sizes to console and `debug_episodes.jsonl`.
 
 Debugging:
 

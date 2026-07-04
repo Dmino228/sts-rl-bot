@@ -100,6 +100,11 @@ class StS2Engine(GameEngine):
 
         curriculum_mode = str(options.get("curriculum_mode", "full_run")).strip().lower()
         if curriculum_mode == "combat":
+            state = self._apply_curriculum_deck(
+                process_manager=process_manager,
+                options=options,
+                current_state=state,
+            )
             state = self._enter_curriculum_combat(
                 process_manager=process_manager,
                 options=options,
@@ -132,5 +137,34 @@ class StS2Engine(GameEngine):
         if state.get("type") == "error":
             raise RuntimeError(
                 f"sts2-cli combat curriculum failed: {state.get('message', state)}"
+            )
+        return state
+
+    def _apply_curriculum_deck(
+        self,
+        *,
+        process_manager: ProcessManagerProtocol,
+        options: dict[str, Any],
+        current_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        deck_spec = options.get("deck_spec")
+        if not isinstance(deck_spec, dict):
+            return current_state
+        if not bool(deck_spec.get("apply_to_headless", False)):
+            return current_state
+
+        command: dict[str, Any] = {
+            "cmd": "set_player",
+            "deck": list(deck_spec.get("cards") or []),
+            "hp": int(deck_spec.get("hp", 80) or 80),
+            "max_hp": int(deck_spec.get("max_hp", 80) or 80),
+            "relics": list(deck_spec.get("relics") or []),
+            "potions": list(deck_spec.get("potions") or []),
+        }
+        process_manager.send_command(command)
+        state = process_manager.read_state()
+        if state.get("type") == "error":
+            raise RuntimeError(
+                f"sts2-cli deck setup failed: {state.get('message', state)}"
             )
         return state

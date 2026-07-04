@@ -104,6 +104,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g_sts2.add_argument("--sts2-combat-hp-loss-reward-scale", type=float, default=None)
     g_sts2.add_argument("--sts2-combat-action-penalty", type=float, default=None)
     g_sts2.add_argument("--sts2-debug-episodes", type=int, default=None)
+    g_sts2.add_argument("--sts2-deck-duplicate-cap", type=int, default=None)
+    g_sts2.add_argument("--sts2-deck-allow-problematic-cards", action="store_true", default=None)
     g_sts2.add_argument("--sts2-capture-stderr", action="store_true", default=None)
     g_sts2.add_argument("--sts2-recycle-every-episodes", type=int, default=None)
     g_sts2.add_argument("--sts2-recycle-every-steps", type=int, default=None)
@@ -132,7 +134,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g_ckpt.add_argument("--checkpoint-freq", type=int, default=None)
     g_ckpt.add_argument("--checkpoint-dir", default=None)
     g_ckpt.add_argument("--training-stage", default=None)
-    g_ckpt.add_argument("--deck-mode", default=None)
+    g_ckpt.add_argument(
+        "--deck-mode",
+        choices=["starter", "random_synthetic", "random_act1_floor_bucket"],
+        default=None,
+    )
     g_ckpt.add_argument("--enemy-pool", default=None)
     g_ckpt.add_argument("--run-notes", default=None)
     g_ckpt.add_argument("--resume-from", default=None)
@@ -302,6 +308,10 @@ def build_env_config(config: dict[str, Any]) -> dict[str, Any]:
             else ""
         ),
         "deck_mode": config.get("deck_mode", ""),
+        "sts2_deck_duplicate_cap": int(config.get("sts2_deck_duplicate_cap", 2) or 2),
+        "sts2_deck_allow_problematic_cards": bool(
+            config.get("sts2_deck_allow_problematic_cards", False)
+        ),
         "process_timeout": float(config.get("process_timeout_s", 120.0) or 120.0),
         "ascension": int(config.get("ascension", 0) or 0),
         "sts2_lang": config.get("sts2_lang", "en"),
@@ -359,6 +369,8 @@ _DEFAULTS: dict[str, Any] = {
     "sts2_combat_hp_loss_reward_scale": 0.01,
     "sts2_combat_action_penalty": 0.001,
     "sts2_debug_episodes": 0,
+    "sts2_deck_duplicate_cap": 2,
+    "sts2_deck_allow_problematic_cards": False,
     "sts2_capture_stderr": False,
     "sts2_recycle_every_episodes": None,
     "sts2_recycle_every_steps": 0,

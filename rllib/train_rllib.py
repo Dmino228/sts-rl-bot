@@ -215,6 +215,7 @@ def main() -> None:
                 )
 
                 # Write to metrics.jsonl (always)
+                metrics_line["deck_mode"] = str(config.get("deck_mode", "") or "starter")
                 run_folder.save_metrics_line(metrics_line)
 
                 # Verbose file log (always, regardless of console mode)
@@ -544,6 +545,10 @@ def _checkpoint_metadata_payload(
                 config.get("sts2_combat_action_penalty", 0.001) or 0.001
             ),
             "sts2_debug_episodes": int(config.get("sts2_debug_episodes", 0) or 0),
+            "sts2_deck_duplicate_cap": int(config.get("sts2_deck_duplicate_cap", 2) or 2),
+            "sts2_deck_allow_problematic_cards": bool(
+                config.get("sts2_deck_allow_problematic_cards", False)
+            ),
             "sts2_cli_path": config.get("sts2_cli_path", ""),
             "sts2_cli_cwd": config.get("sts2_cli_cwd", ""),
             "sts2_cli_args": list(config.get("sts2_cli_args") or []),
@@ -694,6 +699,7 @@ def _combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
         "avg_monster_hp_remaining_on_loss": _format_metric(
             _custom_metric(result, "avg_monster_hp_remaining_on_loss_mean")
         ),
+        "avg_deck_size": _format_metric(_custom_metric(result, "deck_size_mean")),
         "encounters": _prefixed_custom_metrics(result, "encounter_id_"),
         "terminated_reasons": _prefixed_custom_metrics(result, "terminated_reason_"),
     }

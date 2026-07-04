@@ -22,7 +22,7 @@ def run_preflight(
         _validate_sts2_executable(config, logger)
         _validate_enemy_pool_non_empty(config, logger)
         _warn_combat_mode_with_full_reward(config, logger)
-        _warn_unsupported_deck_mode(config, logger)
+        _validate_sts2_deck_mode(config, logger)
         _warn_expensive_eval(config, logger)
 
     _warn_worker_count(config, game_key, logger)
@@ -96,19 +96,107 @@ def _warn_combat_mode_with_full_reward(
         )
 
 
-def _warn_unsupported_deck_mode(
+def _validate_sts2_deck_mode(
     config: dict[str, Any],
     logger: logging.Logger,
 ) -> None:
-    """Warn when deck_mode is currently metadata-only."""
+    """Validate deck-mode configuration and probe non-starter Headless support."""
+    from sts2.deck_generator import normalize_deck_mode
+
+    preset_name = str(config.get("_preset_name", "") or "")
     deck_mode = str(config.get("deck_mode", "") or "").strip().lower()
-    if deck_mode and deck_mode not in {"starter", "unspecified"}:
-        logger.warning(
-            "Deck mode %r is not implemented yet for StS2 Headless. "
-            "Training will use the deck returned by start_run unless a future "
-            "deck injection step is added before enter_room.",
-            deck_mode,
+    try:
+        deck_mode = normalize_deck_mode(deck_mode)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if "random_deck" in preset_name and deck_mode == "starter":
+        raise SystemExit(
+            f"Preset {preset_name!r} contains 'random_deck' but resolves to "
+            "deck_mode=starter. Rename the preset or set a real random deck mode."
         )
+
+    logger.info(
+        "STS2 deck mode %r: duplicate_cap=%s allow_problematic_cards=%s",
+        deck_mode,
+        config.get("sts2_deck_duplicate_cap", 2),
+        bool(config.get("sts2_deck_allow_problematic_cards", False)),
+    )
+
+    curriculum_mode = str(config.get("sts2_curriculum_mode", "full_run")).strip().lower()
+    if curriculum_mode != "combat" or deck_mode == "starter":
+        return
+    _probe_sts2_deck_support(config, logger)
+
+
+def _probe_sts2_deck_support(
+    config: dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Start a tiny Headless process and verify set_player can replace/upgrade deck."""
+    from sts2.process_manager import StS2CliProcessManager
+
+    manager = StS2CliProcessManager(
+        timeout=min(20.0, float(config.get("process_timeout_s", 30.0) or 30.0)),
+        cli_path=str(config.get("sts2_cli_path", "sts2-cli") or "sts2-cli"),
+        cli_args=list(config.get("sts2_cli_args") or []),
+        cli_cwd=str(config.get("sts2_cli_cwd", "") or "") or None,
+        capture_stderr=bool(config.get("sts2_capture_stderr", False)),
+    )
+    try:
+        manager.launch_game()
+        manager.signal_ready()
+        manager.send_command(
+            {
+                "cmd": "start_run",
+                "character": "Ironclad",
+                "ascension": 0,
+                "seed": "__deck_probe__",
+                "lang": str(config.get("sts2_lang", "en") or "en"),
+            }
+        )
+        state = manager.read_state()
+        if state.get("type") == "error":
+            raise RuntimeError(state.get("message", state))
+        manager.send_command(
+            {
+                "cmd": "set_player",
+                "deck": [
+                    {"id": "CARD.BASH", "upgraded": True},
+                    {"id": "CARD.POMMEL_STRIKE", "upgraded": False},
+                    {"id": "CARD.DEFEND_IRONCLAD", "upgraded": False},
+                ],
+                "hp": 68,
+                "max_hp": 80,
+                "relics": ["RELIC.BURNING_BLOOD"],
+                "potions": [],
+            }
+        )
+        state = manager.read_state()
+        if state.get("type") == "error":
+            raise RuntimeError(state.get("message", state))
+        player = state.get("player") if isinstance(state, dict) else None
+        deck = player.get("deck") if isinstance(player, dict) else None
+        if not isinstance(deck, list) or len(deck) != 3:
+            raise RuntimeError(f"set_player did not return the expected deck: {deck!r}")
+        first = deck[0] if isinstance(deck[0], dict) else {}
+        if first.get("id") != "CARD.BASH" or first.get("upgraded") is not True:
+            raise RuntimeError(
+                "set_player deck probe did not preserve CARD.BASH upgrade: "
+                f"{first!r}"
+            )
+        logger.info("STS2 deck replacement probe passed.")
+    except Exception as exc:
+        raise SystemExit(
+            "StS2 Headless cannot apply generated deck specs. "
+            "Rebuild/update C:\\dev\\sts2-cli so set_player accepts deck entries "
+            f"with id/upgraded before using random deck modes. Probe error: {exc}"
+        ) from exc
+    finally:
+        try:
+            manager.stop()
+        except Exception:
+            pass
 
 
 def _warn_expensive_eval(

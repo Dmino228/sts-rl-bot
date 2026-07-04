@@ -42,7 +42,10 @@ class FakeStS2ProcessManager:
     def read_state(self):
         if not self.states:
             raise RuntimeError("No fake STS2 states left")
-        return self.states.pop(0)
+        state = self.states.pop(0)
+        if callable(state):
+            return state(self)
+        return state
 
     def send_command(self, command):
         self.sent.append(command)
@@ -115,6 +118,71 @@ def _combat_decision():
             "relics": [{"name": "Burning Blood"}],
             "potions": [{"index": 0, "name": "Block Potion", "target_type": "Self"}],
         },
+    }
+
+
+def _combat_decision_from_set_player(manager):
+    set_player = next(cmd for cmd in manager.sent if isinstance(cmd, dict) and cmd.get("cmd") == "set_player")
+    deck = list(set_player["deck"])
+    nonstarter = [
+        card for card in deck
+        if card.get("id") not in {"CARD.STRIKE_IRONCLAD", "CARD.DEFEND_IRONCLAD", "CARD.BASH"}
+    ]
+    hand_cards = (nonstarter[:1] + deck)[:5]
+
+    def card_name(card_id: str) -> str:
+        return {
+            "CARD.STRIKE_IRONCLAD": "Strike",
+            "CARD.DEFEND_IRONCLAD": "Defend",
+            "CARD.BASH": "Bash",
+            "CARD.POMMEL_STRIKE": "Pommel Strike",
+            "CARD.SHRUG_IT_OFF": "Shrug It Off",
+        }.get(card_id, card_id.removeprefix("CARD.").replace("_", " ").title())
+
+    hand = [
+        {
+            "index": idx,
+            "id": card["id"],
+            "name": card_name(card["id"]),
+            "cost": 1,
+            "type": "Attack" if "STRIKE" in card["id"] or card["id"] == "CARD.BASH" else "Skill",
+            "target_type": "AnyEnemy" if "STRIKE" in card["id"] or card["id"] == "CARD.BASH" else "Self",
+            "can_play": True,
+            "upgraded": bool(card.get("upgraded", False)),
+            "stats": {"damage": 6},
+        }
+        for idx, card in enumerate(hand_cards)
+    ]
+    player_deck = [
+        {
+            "id": card["id"],
+            "name": card_name(card["id"]),
+            "upgraded": bool(card.get("upgraded", False)),
+        }
+        for card in deck
+    ]
+    return {
+        "type": "decision",
+        "decision": "combat_play",
+        "context": {"act": 1, "floor": 1},
+        "energy": 3,
+        "max_energy": 3,
+        "hand": hand,
+        "enemies": [
+            {"index": 0, "hp": 30, "max_hp": 30, "intents": [{"type": "Attack", "damage": 5}]},
+        ],
+        "player": {
+            "hp": set_player.get("hp", 80),
+            "max_hp": set_player.get("max_hp", 80),
+            "block": 0,
+            "gold": 99,
+            "deck_size": len(deck),
+            "deck": player_deck,
+            "relics": [{"id": "RELIC.BURNING_BLOOD", "name": "Burning Blood"}],
+            "potions": [],
+        },
+        "draw_pile_count": max(0, len(deck) - len(hand)),
+        "discard_pile_count": 0,
     }
 
 
@@ -558,6 +626,78 @@ def test_env_reset_sts2_combat_curriculum_enters_encounter():
     ]
     assert obs.shape == (349,)
     assert info["action_mask"][TARGETED_PLAY_BASE] == 1
+    env.close()
+
+
+def test_env_reset_sts2_random_deck_applies_set_player_before_enter_room():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        deck_mode="random_synthetic",
+        sts2_seed=123,
+        worker_id=7,
+    )
+    fake_manager = FakeStS2ProcessManager(
+        [_map_decision(), _map_decision(), _combat_decision_from_set_player]
+    )
+    env.process_manager = fake_manager
+
+    _obs, info = env.reset()
+
+    assert [cmd["cmd"] for cmd in fake_manager.sent] == [
+        "start_run",
+        "set_player",
+        "enter_room",
+    ]
+    set_player = fake_manager.sent[1]
+    assert set_player["hp"] == 80
+    assert set_player["max_hp"] == 80
+    assert set_player["relics"] == ["RELIC.BURNING_BLOOD"]
+    assert any(
+        card["id"] not in {"CARD.STRIKE_IRONCLAD", "CARD.DEFEND_IRONCLAD", "CARD.BASH"}
+        for card in set_player["deck"]
+    )
+    assert all("upgraded" in card for card in set_player["deck"])
+    assert fake_manager.sent[2]["cmd"] == "enter_room"
+    assert info["combat_reset"]["deck_mode"] == "random_synthetic"
+    assert info["combat_reset"]["deck_source"] == "synthetic_ironclad_act1_reward_pool"
+    assert info["combat_reset"]["added_cards"]
+    assert any(
+        card["id"] not in {"CARD.STRIKE_IRONCLAD", "CARD.DEFEND_IRONCLAD", "CARD.BASH"}
+        for card in info["combat_reset"]["deck"]
+    )
+    assert any(
+        card["id"] not in {"CARD.STRIKE_IRONCLAD", "CARD.DEFEND_IRONCLAD", "CARD.BASH"}
+        for card in info["combat_reset"]["hand"]
+    )
+    env.close()
+
+
+def test_env_reset_sts2_floor_bucket_logs_bucket_metadata():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_combat_encounter="SHRINKER_BEETLE_WEAK",
+        deck_mode="random_act1_floor_bucket",
+        sts2_seed=456,
+        worker_id=8,
+    )
+    fake_manager = FakeStS2ProcessManager(
+        [_map_decision(), _map_decision(), _combat_decision_from_set_player]
+    )
+    env.process_manager = fake_manager
+
+    _obs, info = env.reset()
+
+    reset = info["combat_reset"]
+    assert fake_manager.sent[1]["cmd"] == "set_player"
+    assert reset["deck_mode"] == "random_act1_floor_bucket"
+    assert reset["floor_bucket"] in {"early", "mid", "late"}
+    assert reset["synthetic_floor"] is not None
+    assert reset["deck_generator_settings"]["duplicate_cap"] == 2
     env.close()
 
 

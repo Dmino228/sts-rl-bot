@@ -11,6 +11,7 @@ from collections import deque
 from typing import Optional, Tuple, Dict, Any, List
 
 from engine_factory import create_game_engine
+from sts2.deck_generator import build_combat_deck_spec
 from sts2.encounters import combat_pool_ids
 
 
@@ -80,6 +81,8 @@ class SlayTheSpireEnv(gym.Env):
         sts2_seed: Optional[int | str] = None,
         deck_mode: str = "",
         sts2_debug_jsonl_path: Optional[str] = None,
+        sts2_deck_duplicate_cap: int = 2,
+        sts2_deck_allow_problematic_cards: bool = False,
     ) -> None:
         super().__init__()
 
@@ -160,12 +163,15 @@ class SlayTheSpireEnv(gym.Env):
         self.sts2_debug_episodes = max(0, int(sts2_debug_episodes))
         self.sts2_seed = sts2_seed
         self.deck_mode = str(deck_mode or "").strip().lower() or "unspecified"
+        self.sts2_deck_duplicate_cap = max(1, int(sts2_deck_duplicate_cap))
+        self.sts2_deck_allow_problematic_cards = bool(sts2_deck_allow_problematic_cards)
         self.sts2_debug_jsonl_path = str(sts2_debug_jsonl_path or "").strip()
         self._debug_jsonl_failed = False
         self._episode_index = 0
         self._combat_initial_hp: Optional[int] = None
         self._combat_initial_monster_hp: Optional[int] = None
         self._last_combat_reset_debug: Dict[str, Any] = {}
+        self._current_deck_spec: Dict[str, Any] = {}
         self._last_reward_parts: Dict[str, float] = {}
         self._last_done_reason = ""
         self._last_action_id: Optional[int] = None
@@ -191,7 +197,7 @@ class SlayTheSpireEnv(gym.Env):
                 else:
                     self._maybe_recycle_process_on_reset()
 
-                reset_options = self._engine_reset_options(options)
+                reset_options = self._engine_reset_options(options, seed=seed)
                 native_reset_state = self.engine.reset_run_state(
                     process_manager=self.process_manager,
                     character_class=self.character_class,
@@ -314,6 +320,8 @@ class SlayTheSpireEnv(gym.Env):
     def _engine_reset_options(
         self,
         options: Optional[Dict[str, Any]],
+        *,
+        seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Merge shared reset options with STS2 curriculum defaults."""
         reset_options = dict(options or {})
@@ -324,6 +332,19 @@ class SlayTheSpireEnv(gym.Env):
             if self.sts2_seed is not None:
                 reset_options.setdefault("seed", self.sts2_seed)
             self._current_combat_encounter = str(reset_options["combat_encounter"])
+            self._current_deck_spec = {}
+            if self._is_combat_curriculum():
+                deck_spec = build_combat_deck_spec(
+                    mode=self.deck_mode,
+                    character=self.character_class,
+                    seed=reset_options.get("seed", seed),
+                    worker_id=self.worker_id,
+                    episode_id=self._episode_index + 1,
+                    duplicate_cap=self.sts2_deck_duplicate_cap,
+                    allow_problematic_cards=self.sts2_deck_allow_problematic_cards,
+                )
+                self._current_deck_spec = deck_spec.to_debug()
+                reset_options.setdefault("deck_spec", deck_spec.to_engine_options())
         return reset_options
 
     def step(
@@ -682,7 +703,11 @@ class SlayTheSpireEnv(gym.Env):
 
     def _pile_size(self, state: Dict[str, Any], key: str) -> Optional[int]:
         found = self._find_nested_list(state, key)
-        return len(found) if found is not None else None
+        if found is not None:
+            return len(found)
+        count_key = f"{key}_count"
+        found_count = self._find_nested_number(state, count_key)
+        return int(found_count) if found_count is not None else None
 
     def _find_nested_list(self, value: Any, key: str, depth: int = 0) -> Optional[List[Any]]:
         if depth > 4:
@@ -694,6 +719,20 @@ class SlayTheSpireEnv(gym.Env):
             for nested_key in ("game_state", "combat_state", "player", "piles"):
                 nested = value.get(nested_key)
                 found = self._find_nested_list(nested, key, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    def _find_nested_number(self, value: Any, key: str, depth: int = 0) -> Optional[float]:
+        if depth > 4:
+            return None
+        if isinstance(value, dict):
+            direct = value.get(key)
+            if isinstance(direct, (int, float)):
+                return float(direct)
+            for nested_key in ("game_state", "combat_state", "player", "piles"):
+                nested = value.get(nested_key)
+                found = self._find_nested_number(nested, key, depth + 1)
                 if found is not None:
                     return found
         return None
@@ -1229,6 +1268,13 @@ class SlayTheSpireEnv(gym.Env):
                 len(deck),
             ),
             "deck": [self._deck_card_debug(card, slot) for slot, card in enumerate(deck)],
+            "hand": self._hand_debug(self.current_state),
+            "added_cards": self._current_deck_spec.get("added_cards", []),
+            "removed_cards": self._current_deck_spec.get("removed_cards", []),
+            "upgraded_cards": self._current_deck_spec.get("upgraded_cards", []),
+            "floor_bucket": self._current_deck_spec.get("floor_bucket"),
+            "synthetic_floor": self._current_deck_spec.get("synthetic_floor"),
+            "deck_generator_settings": self._current_deck_spec.get("generator_settings", {}),
             "draw_pile_size": self._pile_size(self.current_state, "draw_pile"),
             "discard_pile_size": self._pile_size(self.current_state, "discard_pile"),
             "exhaust_pile_size": self._pile_size(self.current_state, "exhaust_pile"),
@@ -1243,9 +1289,10 @@ class SlayTheSpireEnv(gym.Env):
         }
 
     def _deck_source(self) -> str:
-        if self.deck_mode in {"", "unspecified", "starter"}:
-            return "sts2_start_run_default"
-        return f"{self.deck_mode}_requested_not_applied_using_sts2_start_run_default"
+        source = self._current_deck_spec.get("source")
+        if source:
+            return str(source)
+        return "sts2_start_run_default"
 
     def _maybe_log_combat_reset_debug(self) -> None:
         if self.sts2_debug_episodes <= 0 or self._episode_index > self.sts2_debug_episodes:
@@ -1257,6 +1304,10 @@ class SlayTheSpireEnv(gym.Env):
             f"encounter={reset.get('encounter_id')} deck_mode={reset.get('deck_mode')} "
             f"deck_source={reset.get('deck_source')} deck_size={reset.get('deck_size')} "
             f"hp={reset.get('current_hp')}/{reset.get('max_hp')} "
+            f"added={[card.get('name', card.get('id')) for card in reset.get('added_cards', [])]} "
+            f"removed={[card.get('name', card.get('id')) for card in reset.get('removed_cards', [])]} "
+            f"upgraded={[card.get('name', card.get('id')) for card in reset.get('upgraded_cards', [])]} "
+            f"bucket={reset.get('floor_bucket')} "
             f"draw={reset.get('draw_pile_size')} discard={reset.get('discard_pile_size')} "
             f"exhaust={reset.get('exhaust_pile_size')} "
             f"deck={[card.get('name', card.get('id')) for card in reset.get('deck', [])]} "

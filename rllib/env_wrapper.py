@@ -308,6 +308,10 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_debug_jsonl_path=_optional_str(
             _config_value(env_config, "sts2_debug_jsonl_path", "")
         ),
+        sts2_deck_duplicate_cap=int(_config_value(env_config, "sts2_deck_duplicate_cap", 2)),
+        sts2_deck_allow_problematic_cards=bool(
+            _config_value(env_config, "sts2_deck_allow_problematic_cards", False)
+        ),
     )
     heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
     return RLLibActionMaskEnv(

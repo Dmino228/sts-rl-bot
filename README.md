@@ -139,6 +139,10 @@ python rllib\train_rllib.py --preset combat_smoke_fixed `
 python rllib\train_rllib.py --preset combat_train_act1_mixed `
   --sts2-cli-path C:\dev\sts2-cli\src\Sts2Headless\bin\Debug\net9.0\Sts2Headless.exe
 
+# Combat training with synthetic Ironclad Act 1 decks
+python rllib\train_rllib.py --preset combat_train_act1_mixed_random_synthetic `
+  --sts2-cli-path C:\dev\sts2-cli\src\Sts2Headless\bin\Debug\net9.0\Sts2Headless.exe
+
 # Debug mode (1 worker, verbose logging, debug episodes)
 python rllib\train_rllib.py --preset combat_debug_fixed `
   --sts2-cli-path C:\dev\sts2-cli\src\Sts2Headless\bin\Debug\net9.0\Sts2Headless.exe
@@ -162,13 +166,31 @@ python rllib\train_rllib.py --preset combat_train_act1_mixed `
 | `combat_smoke_fixed` | combat | fixed | 2 | 50K | compact |
 | `combat_debug_fixed` | combat | fixed | 1 | 10K | verbose |
 | `combat_debug_act1_mixed_starter_deck` | combat | act1_mixed | 1 | 10K | verbose |
+| `combat_debug_act1_mixed_random_synthetic` | combat | act1_mixed | 1 | 10K | verbose |
 | `combat_debug_all_mixed_starter_deck` | combat | all_mixed | 1 | 10K | verbose |
 | `combat_train_act1_mixed` | combat | act1_mixed | 8 | 1M | compact |
 | `combat_train_act1_mixed_starter_deck` | combat | act1_mixed | 8 | 1M | compact |
+| `combat_train_act1_mixed_random_synthetic` | combat | act1_mixed | 8 | 1M | compact |
+| `combat_train_act1_mixed_floor_bucket` | combat | act1_mixed | 8 | 1M | compact |
 | `combat_train_all_mixed_starter_deck` | combat | all_mixed | 8 | 1M | compact |
 | `combat_eval_act1_mixed` | combat | act1_mixed | 1 | 0 | compact |
 | `fullrun_ironclad` | full_run | n/a | 8 | 10M | compact |
 | `fullrun_ironclad_heuristic_hard` | full_run | n/a | 8 | 10M | compact |
+
+Combat deck modes:
+
+- `starter`: exact Ironclad starter deck from `start_run`.
+- `random_synthetic`: starter deck plus synthetic Act 1 Ironclad reward cards, with limited starter removals and upgrades.
+- `random_act1_floor_bucket`: synthetic early/mid/late Act 1 deck buckets. This is floor-conditioned, not a real full-run snapshot model.
+
+For non-starter combat deck modes the reset flow is:
+
+```text
+start_run -> set_player(deck/hp/relics/potions) -> enter_room(combat, encounter)
+```
+
+The generated deck is applied to `Sts2Headless`; it is not only observation
+metadata.
 
 List presets and inspect resolved config without starting training:
 
