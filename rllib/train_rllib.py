@@ -709,13 +709,31 @@ def _grouped_combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
     """Extract grouped category metrics (weak/normal/elite/boss)."""
     metrics: dict[str, str] = {}
     for category in ("weak", "normal", "elite", "boss"):
-        wr = _custom_metric(result, f"{category}_win_rate_mean")
-        hp = _custom_metric(result, f"{category}_avg_hp_lost_mean")
+        wins = _custom_metric(result, f"{category}_win_count_mean")
+        hp_sum = _custom_metric(result, f"{category}_hp_lost_sum_mean")
         cnt = _custom_metric(result, f"{category}_encounter_count_mean")
+        wr = _ratio_or_none(wins, cnt)
+        hp = _ratio_or_none(hp_sum, cnt)
+        if wr is None:
+            wr = _custom_metric(result, f"{category}_win_rate_mean")
+        if hp is None:
+            hp = _custom_metric(result, f"{category}_avg_hp_lost_mean")
         metrics[f"{category}_win_rate"] = _format_metric(wr)
         metrics[f"{category}_avg_hp_lost"] = _format_metric(hp)
         metrics[f"{category}_encounter_count"] = _format_metric(cnt)
     return metrics
+
+
+def _ratio_or_none(numerator: Any, denominator: Any) -> float | None:
+    try:
+        if numerator is None or denominator is None:
+            return None
+        denom = float(denominator)
+        if denom <= 0.0:
+            return None
+        return float(numerator) / denom
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 def _custom_metric(result: dict[str, Any], key: str) -> Any:

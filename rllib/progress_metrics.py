@@ -96,9 +96,15 @@ class ProgressMetricsCallback(DefaultCallbacks):
             is_win = float(_safe_float(combat.get("combat_win"), 0.0))
             hp_lost = _safe_float(combat.get("hp_lost"), 0.0)
             for cat in ("weak", "normal", "elite", "boss"):
-                episode.custom_metrics[f"{cat}_win_rate"] = is_win if category == cat else 0.0
-                episode.custom_metrics[f"{cat}_avg_hp_lost"] = hp_lost if category == cat else 0.0
-                episode.custom_metrics[f"{cat}_encounter_count"] = 1.0 if category == cat else 0.0
+                in_category = category == cat
+                episode.custom_metrics[f"{cat}_win_count"] = is_win if in_category else 0.0
+                episode.custom_metrics[f"{cat}_hp_lost_sum"] = hp_lost if in_category else 0.0
+                episode.custom_metrics[f"{cat}_encounter_count"] = 1.0 if in_category else 0.0
+                # Backward-compatible raw one-hot fields. Do not use these as
+                # category win rates across mixed pools; train_rllib derives
+                # true category rates from win_count / encounter_count.
+                episode.custom_metrics[f"{cat}_win_rate"] = is_win if in_category else 0.0
+                episode.custom_metrics[f"{cat}_avg_hp_lost"] = hp_lost if in_category else 0.0
 
     @staticmethod
     def _record_progress(episode: Any, info: Any) -> None:

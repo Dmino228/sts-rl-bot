@@ -513,6 +513,11 @@ def test_progress_metrics_callback_aggregates_combat_info():
     assert episode.custom_metrics["terminated_reason_win"] == 1.0
     assert episode.custom_metrics["terminated_reason_loss"] == 0.0
     assert episode.custom_metrics["terminated_reason_timeout"] == 0.0
+    assert episode.custom_metrics["weak_win_count"] == 1.0
+    assert episode.custom_metrics["weak_encounter_count"] == 1.0
+    assert episode.custom_metrics["weak_hp_lost_sum"] == 8.0
+    assert episode.custom_metrics["normal_win_count"] == 0.0
+    assert episode.custom_metrics["normal_encounter_count"] == 0.0
 
 
 def test_train_rllib_progress_log_metrics_reads_custom_metrics():
@@ -564,6 +569,38 @@ def test_train_rllib_combat_log_metrics_reads_custom_metrics():
     assert metrics["avg_combat_steps"] == "9.50"
     assert metrics["encounters"] == "SHRINKER_BEETLE_WEAK:4.00"
     assert metrics["terminated_reasons"] == "win:3.00"
+
+
+def test_train_rllib_grouped_combat_metrics_use_category_denominator():
+    from rllib import train_rllib
+
+    metrics = train_rllib._grouped_combat_log_metrics(
+        {
+            "custom_metrics": {
+                # Four total fights encoded as RLlib means:
+                # weak: 1 win / 2 fights, normal: 2 wins / 2 fights.
+                "weak_win_count_mean": 0.25,
+                "weak_hp_lost_sum_mean": 6.0,
+                "weak_encounter_count_mean": 0.50,
+                "normal_win_count_mean": 0.50,
+                "normal_hp_lost_sum_mean": 5.0,
+                "normal_encounter_count_mean": 0.50,
+                "elite_win_count_mean": 0.0,
+                "elite_hp_lost_sum_mean": 0.0,
+                "elite_encounter_count_mean": 0.0,
+                "boss_win_count_mean": 0.0,
+                "boss_hp_lost_sum_mean": 0.0,
+                "boss_encounter_count_mean": 0.0,
+            }
+        }
+    )
+
+    assert metrics["weak_win_rate"] == "0.50"
+    assert metrics["normal_win_rate"] == "1.00"
+    assert metrics["elite_win_rate"] == "n/a"
+    assert metrics["boss_win_rate"] == "n/a"
+    assert metrics["weak_avg_hp_lost"] == "12.00"
+    assert metrics["normal_avg_hp_lost"] == "10.00"
 
 
 def test_sts2_combat_enemy_pools_include_act1_groups():

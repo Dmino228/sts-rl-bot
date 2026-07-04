@@ -266,9 +266,11 @@ Combat training metrics are aggregated by encounter category:
 - **elite**: encounters ending with `_ELITE`
 - **boss**: encounters ending with `_BOSS`
 
-Grouped metrics include per-category win rate and average HP lost. These appear
-in the compact console, verbose logs, and `metrics.jsonl`. Per-encounter detail
-goes to `metrics.jsonl` and verbose mode.
+Grouped metrics include per-category win rate and average HP lost. Category win
+rate uses the category denominator, for example `weak_win_rate = weak_wins /
+weak_fights`, not `weak_wins / all_fights`. These appear in the compact
+console, verbose logs, and `metrics.jsonl`. Per-encounter detail goes to
+`metrics.jsonl` and verbose mode.
 
 ## Run Folders
 
