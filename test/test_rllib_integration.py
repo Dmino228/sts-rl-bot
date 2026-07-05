@@ -563,6 +563,8 @@ def test_progress_metrics_callback_aggregates_combat_info():
                 "boss_hp_fraction_removed": 1.0,
                 "min_boss_hp_reached": 0,
                 "damage_dealt_total": 30,
+                "add_damage_dealt_total": 6,
+                "add_hp_fraction_removed": 0.5,
                 "turns_survived": 4,
                 "end_turn_with_energy_rate": 0.25,
                 "power_play_rate": 0.5,
@@ -584,6 +586,8 @@ def test_progress_metrics_callback_aggregates_combat_info():
     assert episode.custom_metrics["avg_monster_hp_remaining_on_loss"] == 0.0
     assert episode.custom_metrics["boss_hp_fraction_removed"] == 1.0
     assert episode.custom_metrics["damage_dealt_total"] == 30.0
+    assert episode.custom_metrics["add_damage_dealt_total"] == 6.0
+    assert episode.custom_metrics["add_hp_fraction_removed"] == 0.5
     assert episode.custom_metrics["turns_survived"] == 4.0
     assert episode.custom_metrics["end_turn_with_energy_rate"] == 0.25
     assert episode.custom_metrics["power_play_rate"] == 0.5
@@ -638,6 +642,8 @@ def test_train_rllib_combat_log_metrics_reads_custom_metrics():
                 "avg_hp_remaining_on_win_mean": 31.0,
                 "avg_hp_lost_mean": 12.0,
                 "avg_monster_hp_remaining_on_loss_mean": 6.0,
+                "add_damage_dealt_total_mean": 4.0,
+                "add_hp_fraction_removed_mean": 0.25,
                 "encounter_id_SHRINKER_BEETLE_WEAK_mean": 4.0,
                 "terminated_reason_win_mean": 3.0,
             }
@@ -648,6 +654,8 @@ def test_train_rllib_combat_log_metrics_reads_custom_metrics():
     assert metrics["combat_loss_rate"] == "0.20"
     assert metrics["combat_timeout_rate"] == "0.05"
     assert metrics["avg_combat_steps"] == "9.50"
+    assert metrics["avg_add_damage_dealt_total"] == "4.00"
+    assert metrics["avg_add_hp_fraction_removed"] == "0.25"
     assert metrics["encounters"] == "SHRINKER_BEETLE_WEAK:4.00"
     assert metrics["terminated_reasons"] == "win:3.00"
 

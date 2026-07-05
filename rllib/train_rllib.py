@@ -1040,6 +1040,12 @@ def _combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
         "avg_damage_dealt_total": _format_metric(
             _custom_metric(result, "damage_dealt_total_mean")
         ),
+        "avg_add_damage_dealt_total": _format_metric(
+            _custom_metric(result, "add_damage_dealt_total_mean")
+        ),
+        "avg_add_hp_fraction_removed": _format_metric(
+            _custom_metric(result, "add_hp_fraction_removed_mean")
+        ),
         "avg_turns_survived": _format_metric(_custom_metric(result, "turns_survived_mean")),
         "end_turn_with_energy_rate": _format_metric(
             _custom_metric(result, "end_turn_with_energy_rate_mean")
@@ -1257,6 +1263,7 @@ def _log_full_iteration(
             "combat_loss_rate=%s combat_timeout_rate=%s avg_combat_steps=%s "
             "avg_hp_lost=%s avg_boss_hp_remaining_on_loss=%s "
             "avg_boss_hp_fraction_removed=%s avg_damage_dealt_total=%s "
+            "avg_add_damage_dealt_total=%s avg_add_hp_fraction_removed=%s "
             "avg_turns_survived=%s end_turn_energy_rate=%s "
             "end_turn_playable_attack_rate=%s block_when_incoming_rate=%s "
             "power_play_rate=%s "
@@ -1283,6 +1290,8 @@ def _log_full_iteration(
         combat.get("avg_boss_hp_remaining_on_loss", "n/a"),
         combat.get("avg_boss_hp_fraction_removed", "n/a"),
         combat.get("avg_damage_dealt_total", "n/a"),
+        combat.get("avg_add_damage_dealt_total", "n/a"),
+        combat.get("avg_add_hp_fraction_removed", "n/a"),
         combat.get("avg_turns_survived", "n/a"),
         combat.get("end_turn_with_energy_rate", "n/a"),
         combat.get("end_turn_with_playable_attack_rate", "n/a"),

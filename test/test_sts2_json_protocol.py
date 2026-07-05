@@ -899,6 +899,61 @@ def test_sts2_combat_boss_metrics_track_primary_boss_not_adds():
     env.close()
 
 
+def test_sts2_boss_potential_rewards_the_kin_add_damage():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_boss_potential",
+        sts2_combat_encounter="THE_KIN_BOSS",
+    )
+    state = _combat_decision()
+    state["player"]["hp"] = 80
+    state["enemies"] = [
+        {"index": 0, "hp": 52, "max_hp": 58, "intents": [{"type": "Attack", "damage": 5}]},
+        {"index": 1, "hp": 59, "max_hp": 59, "intents": [{"type": "Buff"}]},
+        {"index": 2, "hp": 190, "max_hp": 190, "intents": [{"type": "Attack", "damage": 12}]},
+    ]
+    env.current_state = normalize_sts2_state(state)
+    env._current_combat_encounter = "THE_KIN_BOSS"
+    env._combat_initial_hp = 80
+    env.last_player_hp = 80
+    env._combat_initial_monster_hp = 307
+    env._combat_initial_boss_hp = 190
+    env._combat_last_monster_hp = 307
+    env._combat_last_boss_hp = 190
+    env.last_monster_total_hp = 307
+
+    reward = env._calculate_combat_reward()
+    metrics = env._combat_progress_metrics()
+
+    assert env._last_reward_parts["boss_hp_fraction_removed"] == pytest.approx(0.0)
+    assert env._last_reward_parts["add_hp_fraction_removed"] == pytest.approx(0.5 * 6 / 117)
+    assert reward > 0.0
+    assert metrics["add_damage_dealt_total"] == pytest.approx(6.0)
+    assert metrics["add_hp_fraction_removed"] == pytest.approx(6 / 117)
+    env.close()
+
+
+def test_sts2_action_quality_counts_end_turn_with_root_energy():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_sparse",
+    )
+    state = normalize_sts2_state(_combat_decision())
+    command = {"cmd": "action", "action": "end_turn"}
+
+    env._record_combat_trace(END_TURN_ACTION, command, state)
+    metrics = env._combat_progress_metrics()
+
+    assert metrics["end_turn_with_energy"] == 1.0
+    assert metrics["end_turn_with_energy_rate"] == pytest.approx(1.0)
+    assert metrics["end_turn_with_playable_attack_rate"] == pytest.approx(1.0)
+    env.close()
+
+
 def test_sts2_combat_sparse_does_not_apply_full_run_macro_rewards():
     env = SlayTheSpireEnv(
         game_version=2,

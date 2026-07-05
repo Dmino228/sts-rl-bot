@@ -827,15 +827,20 @@ class SlayTheSpireEnv(gym.Env):
         return []
 
     def _state_player(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        player = state.get("player")
-        if isinstance(player, dict):
-            return player
+        merged: Dict[str, Any] = {}
         game_state = state.get("game_state", {})
         if isinstance(game_state, dict):
             combat_state = game_state.get("combat_state", {})
             if isinstance(combat_state, dict) and isinstance(combat_state.get("player"), dict):
-                return combat_state["player"]
-        return {}
+                merged.update(combat_state["player"])
+        player = state.get("player")
+        if isinstance(player, dict):
+            merged.update(player)
+        if state.get("energy") is not None:
+            merged["energy"] = state.get("energy")
+        if state.get("max_energy") is not None:
+            merged["max_energy"] = state.get("max_energy")
+        return merged
 
     def _state_deck(self, state: Dict[str, Any]) -> List[Any]:
         player = self._state_player(state)
@@ -1401,6 +1406,7 @@ class SlayTheSpireEnv(gym.Env):
                 self._combat_boss_potential_reward_parts(
                     done_reason=done_reason,
                     current_hp=current_hp,
+                    current_monster_hp=current_monster_hp,
                     current_boss_hp=current_boss_hp,
                 )
             )
@@ -1459,13 +1465,23 @@ class SlayTheSpireEnv(gym.Env):
         *,
         done_reason: str,
         current_hp: Optional[int],
+        current_monster_hp: int,
         current_boss_hp: int,
     ) -> Dict[str, float]:
         parts: Dict[str, float] = {}
         initial_boss_hp = max(1, int(self._combat_initial_boss_hp or self._combat_initial_monster_hp or 0))
+        initial_total_hp = max(1, int(self._combat_initial_monster_hp or initial_boss_hp))
         if self._combat_last_boss_hp is not None:
             damage_delta = max(0, self._combat_last_boss_hp - current_boss_hp)
             parts["boss_hp_fraction_removed"] = float(damage_delta) / float(initial_boss_hp)
+        if self._combat_last_monster_hp is not None and self._combat_last_boss_hp is not None:
+            total_damage_delta = max(0, self._combat_last_monster_hp - current_monster_hp)
+            boss_damage_delta = max(0, self._combat_last_boss_hp - current_boss_hp)
+            add_damage_delta = max(0, total_damage_delta - boss_damage_delta)
+            initial_add_hp = max(0, initial_total_hp - initial_boss_hp)
+            if add_damage_delta > 0 and initial_add_hp > 0:
+                # Followers should matter, but boss damage remains the primary signal.
+                parts["add_hp_fraction_removed"] = 0.50 * float(add_damage_delta) / float(initial_add_hp)
         if self.last_player_hp is not None and current_hp is not None:
             hp_delta = max(0, self.last_player_hp - current_hp)
             initial_hp = max(1, int(self._combat_initial_hp or self.last_player_hp or 1))
@@ -1581,6 +1597,13 @@ class SlayTheSpireEnv(gym.Env):
             if initial_boss_hp > 0
             else 0.0
         )
+        initial_add_hp = max(0.0, initial_monster_hp - initial_boss_hp)
+        add_damage_dealt_total = max(0.0, damage_dealt_total - boss_damage_dealt_total)
+        add_fraction_removed = (
+            min(1.0, max(0.0, add_damage_dealt_total / initial_add_hp))
+            if initial_add_hp > 0
+            else 0.0
+        )
         monster_hp_remaining_on_loss = float(monster_hp) if reason == "loss" else 0.0
         boss_hp_remaining_on_loss = float(boss_hp) if reason == "loss" else 0.0
 
@@ -1596,6 +1619,8 @@ class SlayTheSpireEnv(gym.Env):
             "boss_hp_fraction_removed": boss_fraction_removed,
             "min_boss_hp_reached": min_boss_hp,
             "damage_dealt_total": damage_dealt_total,
+            "add_damage_dealt_total": add_damage_dealt_total,
+            "add_hp_fraction_removed": add_fraction_removed,
             "turns_survived": float(self._combat_max_turn),
             "end_turn_with_energy": float(self._combat_end_turn_with_energy),
             "end_turn_with_energy_rate": self._safe_ratio(

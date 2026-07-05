@@ -510,6 +510,8 @@ New boss-specific metrics:
 
 - `avg_boss_hp_remaining_on_loss`
 - `avg_boss_hp_fraction_removed`
+- `avg_add_damage_dealt_total`
+- `avg_add_hp_fraction_removed`
 - `avg_min_boss_hp_reached`
 - `avg_damage_dealt_total`
 - `avg_turns_survived`
@@ -548,8 +550,15 @@ The `combat_boss_potential` reward mode is intended for boss feasibility tests:
 - `-1` terminal loss
 - `-3` timeout
 - per-step normalized boss HP reduction
+- per-step add/follower HP reduction for multi-enemy boss fights such as
+  `THE_KIN_BOSS`, logged as `add_hp_fraction_removed`
 - smaller normalized player HP loss penalty
 - one-shot boss HP milestones at 75/50/25%
+
+Action-quality diagnostics are computed from the active combat state. In StS2,
+energy can live at the root decision level and inside `combat_state.player`, so
+`end_turn_with_energy_rate` should be interpreted as "ended turn while current
+combat energy was still positive."
 
 Encoder experiments can be run with:
 
