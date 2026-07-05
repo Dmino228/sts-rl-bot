@@ -82,6 +82,11 @@ Available combat deck modes:
 - `random_act1_floor_bucket`: synthetic early/mid/late Act 1 buckets with
   floor-conditioned card additions, HP, removals, and upgrades. This is not
   called realistic because it is not learned from real full-run snapshots.
+- `random_boss_synthetic_safe`: synthetic boss-feasibility deck with extra
+  block/scaling cards, 1-2 simple relics, one potion, and fixed logging.
+- `fixed_the_kin_overfit`: exact deterministic THE_KIN_BOSS overfit deck,
+  relics, potion, and HP. Use only to prove one controlled boss fight is
+  learnable before widening the distribution.
 
 ### Quick Start with Presets
 
@@ -492,3 +497,37 @@ Encoder experiments can be run with:
 
 The flat encoder includes card/relic/potion/monster identity one-hots and changes
 the observation shape, so keep its checkpoints in a separate training stage.
+
+### THE_KIN_BOSS Overfit Test
+
+When boss-only random synthetic training plateaus, the next diagnostic is not
+another wide boss run. First overfit one exact fight:
+
+- encounter: `THE_KIN_BOSS`
+- deck mode: `fixed_the_kin_overfit`
+- relics: Burning Blood, Anchor, Vajra, Oddly Smooth Stone, Bag of Preparation
+- potion: Strength Potion
+- HP: 80/80
+- seed: `20260705`
+- encoder: compact
+- reward: `combat_boss_potential`
+
+Debug:
+
+```powershell
+python rllib\train_rllib.py `
+  --preset boss_debug_overfit_the_kin_fixed_deck `
+  --sts2-cli-path <path>
+```
+
+Train:
+
+```powershell
+python rllib\train_rllib.py `
+  --preset boss_train_overfit_the_kin_fixed_deck `
+  --sts2-cli-path <path>
+```
+
+Success criterion: deterministic PPO eval should show a rising win rate on the
+fixed encounter. If this does not learn, focus on action encoding/reward/model
+capacity before adding boss/deck/seed diversity.

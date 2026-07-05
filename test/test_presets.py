@@ -171,6 +171,16 @@ class TestPresets:
         assert preset["deck_mode"] == "random_act1_floor_bucket"
         assert preset["sts2_reward_mode"] == "combat_boss_potential"
 
+    def test_boss_overfit_the_kin_fixed_deck_preset_properties(self) -> None:
+        preset = load_preset("boss_train_overfit_the_kin_fixed_deck")
+        assert preset["sts2_combat_enemy_pool"] == "fixed"
+        assert preset["sts2_combat_encounter"] == "THE_KIN_BOSS"
+        assert preset["deck_mode"] == "fixed_the_kin_overfit"
+        assert preset["sts2_reward_mode"] == "combat_boss_potential"
+        assert preset["sts2_encoder_mode"] == "compact"
+        assert preset["seed"] == 20260705
+        assert preset["workers"] == 4
+
 
 
 

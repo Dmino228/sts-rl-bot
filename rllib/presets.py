@@ -863,6 +863,60 @@ PRESETS["boss_train_act1_boss_floor_bucket"] = {
     "enemy_pool": "act1_boss",
 }
 
+PRESETS["boss_debug_overfit_the_kin_fixed_deck"] = {
+    "game_version": "2",
+    "sts2_curriculum_mode": "combat",
+    "sts2_reward_mode": "combat_boss_potential",
+    "sts2_combat_enemy_pool": "fixed",
+    "sts2_combat_encounter": "THE_KIN_BOSS",
+    "sts2_encoder_mode": "compact",
+    "training_stage": "debug_overfit_the_kin_fixed_deck",
+    "workers": 1,
+    "envs_per_worker": 1,
+    "timesteps": 50_000,
+    "eval_combat_episodes": 20,
+    "eval_combat_freq": 2,
+    "eval_combat_deterministic": True,
+    "eval_random_baseline": 20,
+    "eval_greedy_baseline": 20,
+    "eval_random_baseline_freq": 0,
+    "checkpoint_freq": 2,
+    "sts2_debug_episodes": 3,
+    "console_mode": "verbose",
+    "character": "Ironclad",
+    "deck_mode": "fixed_the_kin_overfit",
+    "enemy_pool": "act1_boss",
+    "seed": 20260705,
+}
+
+PRESETS["boss_train_overfit_the_kin_fixed_deck"] = {
+    "game_version": "2",
+    "sts2_curriculum_mode": "combat",
+    "sts2_reward_mode": "combat_boss_potential",
+    "sts2_combat_enemy_pool": "fixed",
+    "sts2_combat_encounter": "THE_KIN_BOSS",
+    "sts2_encoder_mode": "compact",
+    "training_stage": "overfit_the_kin_fixed_deck",
+    "workers": 4,
+    "envs_per_worker": 1,
+    "timesteps": 500_000,
+    "train_batch_size": 1024,
+    "rollout_fragment_length": 128,
+    "eval_combat_episodes": 0,
+    "eval_combat_freq": 0,
+    "eval_combat_deterministic": True,
+    "eval_random_baseline": 0,
+    "eval_greedy_baseline": 0,
+    "eval_random_baseline_freq": 0,
+    "checkpoint_freq": 0,
+    "sts2_debug_episodes": 0,
+    "console_mode": "compact",
+    "character": "Ironclad",
+    "deck_mode": "fixed_the_kin_overfit",
+    "enemy_pool": "act1_boss",
+    "seed": 20260705,
+}
+
 
 def list_presets() -> list[str]:
     """Return sorted preset names."""

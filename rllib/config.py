@@ -146,6 +146,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "random_synthetic",
             "random_act1_floor_bucket",
             "random_boss_synthetic_safe",
+            "fixed_the_kin_overfit",
         ],
         default=None,
     )

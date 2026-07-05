@@ -127,3 +127,37 @@ def test_random_boss_synthetic_safe_adds_stronger_resources() -> None:
     assert len(spec.relics) >= 2
     assert spec.potions
     assert spec.hp >= 68
+
+
+def test_fixed_the_kin_overfit_deck_is_exact_and_seed_independent() -> None:
+    a = build_combat_deck_spec(
+        mode="fixed_the_kin_overfit",
+        seed=1,
+        worker_id=1,
+        episode_id=1,
+    )
+    b = build_combat_deck_spec(
+        mode="fixed_the_kin_overfit",
+        seed=999,
+        worker_id=8,
+        episode_id=500,
+    )
+    codex = SpireCodex()
+
+    assert a.to_debug() == b.to_debug()
+    assert a.apply_to_headless is True
+    assert a.source == "fixed_the_kin_overfit_v1"
+    assert a.hp == 80
+    assert a.max_hp == 80
+    assert a.relics == (
+        "RELIC.BURNING_BLOOD",
+        "RELIC.ANCHOR",
+        "RELIC.VAJRA",
+        "RELIC.ODDLY_SMOOTH_STONE",
+        "RELIC.BAG_OF_PREPARATION",
+    )
+    assert a.potions == ("POTION.STRENGTH_POTION",)
+    assert len(a.cards) == 18
+    assert sum(card.upgraded for card in a.cards) == 8
+    for card in a.cards:
+        assert codex.get_card_index(bare_model_id(card.id, "CARD")) is not None

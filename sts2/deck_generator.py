@@ -19,6 +19,7 @@ SUPPORTED_DECK_MODES = frozenset(
         "random_synthetic",
         "random_act1_floor_bucket",
         "random_boss_synthetic_safe",
+        "fixed_the_kin_overfit",
     }
 )
 
@@ -79,6 +80,34 @@ BOSS_SAFE_POTION_POOL = (
     "POTION.DEXTERITY_POTION",
     "POTION.FIRE_POTION",
 )
+THE_KIN_OVERFIT_DECK: tuple[tuple[str, bool], ...] = (
+    ("STRIKE_IRONCLAD", False),
+    ("STRIKE_IRONCLAD", False),
+    ("STRIKE_IRONCLAD", True),
+    ("DEFEND_IRONCLAD", False),
+    ("DEFEND_IRONCLAD", True),
+    ("DEFEND_IRONCLAD", True),
+    ("DEFEND_IRONCLAD", False),
+    ("BASH", True),
+    ("POMMEL_STRIKE", False),
+    ("POMMEL_STRIKE", True),
+    ("IRON_WAVE", False),
+    ("IRON_WAVE", True),
+    ("SHRUG_IT_OFF", False),
+    ("SHRUG_IT_OFF", True),
+    ("BATTLE_TRANCE", False),
+    ("INFLAME", True),
+    ("DEMON_FORM", False),
+    ("BARRICADE", False),
+)
+THE_KIN_OVERFIT_RELICS = (
+    "RELIC.BURNING_BLOOD",
+    "RELIC.ANCHOR",
+    "RELIC.VAJRA",
+    "RELIC.ODDLY_SMOOTH_STONE",
+    "RELIC.BAG_OF_PREPARATION",
+)
+THE_KIN_OVERFIT_POTIONS = ("POTION.STRENGTH_POTION",)
 
 
 @dataclass(frozen=True)
@@ -216,6 +245,8 @@ def build_combat_deck_spec(
             duplicate_cap=max(2, int(duplicate_cap)),
             settings=settings,
         )
+    if normalized_mode == "fixed_the_kin_overfit":
+        return _fixed_the_kin_overfit_spec(pool=pool, settings=settings)
     raise ValueError(f"Unsupported STS2 deck mode: {mode!r}")
 
 
@@ -393,6 +424,58 @@ def _random_boss_safe_spec(
             "potion_pool": list(BOSS_SAFE_POTION_POOL),
         },
         apply_to_headless=True,
+    )
+
+
+def _fixed_the_kin_overfit_spec(
+    *,
+    pool: list[DeckCardSpec],
+    settings: dict[str, Any],
+) -> CombatDeckSpec:
+    cards = tuple(
+        _deck_card_from_pool(pool, bare_id, upgraded=upgraded)
+        for bare_id, upgraded in THE_KIN_OVERFIT_DECK
+    )
+    upgraded_cards = tuple(card for card in cards if card.upgraded)
+    return CombatDeckSpec(
+        mode="fixed_the_kin_overfit",
+        source="fixed_the_kin_overfit_v1",
+        cards=cards,
+        relics=THE_KIN_OVERFIT_RELICS,
+        potions=THE_KIN_OVERFIT_POTIONS,
+        hp=80,
+        max_hp=80,
+        added_cards=cards[len(IRONCLAD_STARTER_DECK):],
+        upgraded_cards=upgraded_cards,
+        generator_settings={
+            **settings,
+            "encounter": "THE_KIN_BOSS",
+            "fixed_seed_recommended": 20260705,
+        },
+        apply_to_headless=True,
+    )
+
+
+def _deck_card_from_pool(
+    pool: list[DeckCardSpec],
+    bare_id: str,
+    *,
+    upgraded: bool,
+) -> DeckCardSpec:
+    normalized = bare_model_id(bare_id, "CARD").upper()
+    for card in pool:
+        if card.bare_id.upper() == normalized:
+            return DeckCardSpec(
+                id=card.id,
+                upgraded=bool(upgraded),
+                name=card.name,
+                rarity=card.rarity,
+                type=card.type,
+            )
+    return DeckCardSpec(
+        id=prefixed_card_id(normalized),
+        upgraded=bool(upgraded),
+        name=normalized.replace("_", " ").title(),
     )
 
 
