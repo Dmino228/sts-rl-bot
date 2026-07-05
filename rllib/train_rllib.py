@@ -35,6 +35,7 @@ RUNS_DIR = os.path.join(PROJECT_ROOT, "runs")
 TIMESTAMP = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 CHECKPOINT_METADATA_FILENAME = "checkpoint_metadata.json"
 CHECKPOINT_METADATA_SCHEMA = "sts_rl_checkpoint_v1"
+RLLIB_CUSTOM_MODEL_NAME = "sts_torch_action_mask_model"
 
 
 def main() -> None:
@@ -138,20 +139,48 @@ def main() -> None:
     target_timesteps = int(config.get("timesteps", 1_000_000))
 
     try:
-        resume_from = _resolve_resume_path(config, checkpoint_dir)
+        resume_from = _resolve_resume_path(config, checkpoint_dir, logger=logger)
+        init_from_rllib = _resolve_init_from_rllib_path(config)
         if resume_from:
+            _validate_checkpoint_metadata_compatibility(
+                config,
+                resume_from,
+                mode="resume",
+                logger=logger,
+            )
+            _warn_resume_stage_safety(config, checkpoint_dir, resume_from, logger)
             logger.info("Restoring RLlib checkpoint from %s", resume_from)
             algo.restore(resume_from)
-        source_checkpoint = _source_checkpoint(config, resume_from)
+            if init_from_rllib:
+                logger.info(
+                    "Ignoring --init-from-rllib=%s because --resume-from/auto-resume restored %s.",
+                    init_from_rllib,
+                    resume_from,
+                )
+        elif init_from_rllib:
+            _validate_checkpoint_metadata_compatibility(
+                config,
+                init_from_rllib,
+                mode="init_from_rllib",
+                logger=logger,
+            )
+            _init_from_rllib_checkpoint(
+                algo=algo,
+                source_checkpoint=init_from_rllib,
+                logger=logger,
+            )
+        source_checkpoint = _source_checkpoint(config, resume_from, init_from_rllib)
 
         current_steps = _algorithm_env_steps(algo)
         logger.info("Current RLlib env timesteps before training: %d", current_steps)
 
         init_sb3 = str(config.get("init_from_sb3", "") or "")
-        if init_sb3 and not resume_from:
+        if init_sb3 and not resume_from and not init_from_rllib:
             from rllib.sb3_transfer import try_transfer_sb3_policy
 
             try_transfer_sb3_policy(algo, init_sb3, logger)
+        elif init_sb3 and init_from_rllib:
+            logger.info("Ignoring --init-from-sb3 because --init-from-rllib was used.")
         elif init_sb3:
             logger.info("Ignoring --init-from-sb3 because an RLlib checkpoint was restored.")
 
@@ -181,6 +210,31 @@ def main() -> None:
         slow_iteration_s = float(config.get("slow_iteration_s", 60.0) or 60.0)
 
         try:
+            if bool(config.get("eval_only", False)):
+                if eval_combat_episodes <= 0:
+                    raise SystemExit("--eval-only requires --eval-combat-episodes > 0.")
+                metrics = _run_policy_combat_eval(
+                    algo=algo,
+                    env_config=env_config,
+                    episodes=eval_combat_episodes,
+                    deterministic=eval_deterministic,
+                    logger=logger,
+                )
+                console.on_eval("ppo_eval", metrics)
+                run_folder.save_metrics_line(
+                    {
+                        "iteration": 0,
+                        "eval_only": True,
+                        "env_steps": current_steps,
+                        **{f"eval_{key}": value for key, value in metrics.items()},
+                    }
+                )
+                console.on_finish({
+                    "total_steps": current_steps,
+                    "checkpoint_path": "n/a (eval-only)",
+                })
+                return
+
             while current_steps < target_steps:
                 previous_steps = current_steps
                 iteration_started_at = time.perf_counter()
@@ -516,6 +570,12 @@ def _checkpoint_metadata_payload(
         "heuristic_top_k": max(1, int(config.get("heuristic_top_k", 1) or 1)),
         "seed": config.get("seed"),
         "preset": config.get("_preset_name") or config.get("preset") or "none",
+        "transfer_mode": _checkpoint_transfer_mode(config),
+        "model": {
+            "custom_model": RLLIB_CUSTOM_MODEL_NAME,
+            "fcnet_hiddens": [64, 64],
+            "vf_share_layers": False,
+        },
         "training": {
             "workers": int(config.get("workers", 0) or 0),
             "envs_per_worker": int(config.get("envs_per_worker", 0) or 0),
@@ -554,6 +614,7 @@ def _checkpoint_metadata_payload(
                 config.get("sts2_deck_allow_problematic_cards", False)
             ),
             "sts2_encoder_mode": config.get("sts2_encoder_mode", "compact"),
+            "curriculum_mix": config.get("curriculum_mix", ""),
             "sts2_cli_path": config.get("sts2_cli_path", ""),
             "sts2_cli_cwd": config.get("sts2_cli_cwd", ""),
             "sts2_cli_args": list(config.get("sts2_cli_args") or []),
@@ -581,13 +642,49 @@ def _checkpoint_metadata_dir(checkpoint_path: str) -> str:
 # Resume / checkpoint discovery
 # ---------------------------------------------------------------------------
 
-def _resolve_resume_path(config: dict[str, Any], checkpoint_dir: str) -> str:
+def _resolve_resume_path(
+    config: dict[str, Any],
+    checkpoint_dir: str,
+    logger: logging.Logger | None = None,
+) -> str:
     resume = config.get("resume_from", "")
     if resume:
-        return os.path.abspath(str(resume))
+        explicit = _resolve_checkpoint_input_path(str(resume))
+        auto = "" if config.get("no_auto_resume", False) else _find_latest_rllib_checkpoint(checkpoint_dir)
+        if auto and logger is not None:
+            logger.info(
+                "Explicit --resume-from=%s wins over auto-resume checkpoint in this stage: %s",
+                explicit,
+                auto,
+            )
+        return explicit
+    if str(config.get("init_from_rllib", "") or "").strip():
+        auto = "" if config.get("no_auto_resume", False) else _find_latest_rllib_checkpoint(checkpoint_dir)
+        if auto and logger is not None:
+            logger.warning(
+                "--init-from-rllib requests a fresh stage transfer, so auto-resume checkpoint "
+                "in the target stage is ignored: %s",
+                auto,
+            )
+        return ""
     if config.get("no_auto_resume", False):
         return ""
     return _find_latest_rllib_checkpoint(checkpoint_dir)
+
+
+def _resolve_init_from_rllib_path(config: dict[str, Any]) -> str:
+    raw = str(config.get("init_from_rllib", "") or "").strip()
+    if not raw:
+        return ""
+    return _resolve_checkpoint_input_path(raw)
+
+
+def _resolve_checkpoint_input_path(raw_path: str) -> str:
+    path = os.path.abspath(str(raw_path))
+    if _is_rllib_checkpoint_dir(path):
+        return path
+    latest = _find_latest_rllib_checkpoint(path)
+    return latest or path
 
 
 def _find_latest_rllib_checkpoint(checkpoint_dir: str) -> str:
@@ -613,12 +710,239 @@ def _is_rllib_checkpoint_dir(path: str) -> bool:
     )
 
 
-def _source_checkpoint(config: dict[str, Any], resume_from: str) -> str:
+def _source_checkpoint(
+    config: dict[str, Any],
+    resume_from: str,
+    init_from_rllib: str = "",
+) -> str:
     if resume_from:
         return os.path.abspath(resume_from)
+    if init_from_rllib:
+        return os.path.abspath(init_from_rllib)
     init_sb3 = config.get("init_from_sb3", "")
     if init_sb3:
         return os.path.abspath(str(init_sb3))
+    return ""
+
+
+def _checkpoint_transfer_mode(config: dict[str, Any]) -> str:
+    if config.get("resume_from"):
+        return "resume_from"
+    if config.get("init_from_rllib"):
+        return "init_from_rllib"
+    if config.get("init_from_sb3"):
+        return "init_from_sb3"
+    return "fresh_or_auto_resume"
+
+
+def _init_from_rllib_checkpoint(
+    *,
+    algo: Any,
+    source_checkpoint: str,
+    logger: logging.Logger,
+) -> None:
+    if not _is_rllib_checkpoint_dir(source_checkpoint):
+        raise SystemExit(f"--init-from-rllib is not an RLlib checkpoint: {source_checkpoint}")
+
+    from ray.rllib.algorithms.algorithm import Algorithm
+
+    source_algo: Any | None = None
+    try:
+        logger.info(
+            "Initializing fresh Algorithm policy/value weights from RLlib checkpoint: %s",
+            source_checkpoint,
+        )
+        source_algo = Algorithm.from_checkpoint(source_checkpoint)
+        _copy_policy_weights(
+            target_algo=algo,
+            source_algo=source_algo,
+            source_checkpoint=source_checkpoint,
+        )
+        logger.info(
+            "Transferred compatible policy/value weights from %s. "
+            "Optimizer state and training iteration remain fresh.",
+            source_checkpoint,
+        )
+    finally:
+        if source_algo is not None:
+            try:
+                source_algo.stop()
+            except Exception:
+                logger.debug("Could not stop temporary source Algorithm.", exc_info=True)
+
+
+def _copy_policy_weights(
+    *,
+    target_algo: Any,
+    source_algo: Any,
+    source_checkpoint: str,
+) -> None:
+    target_policy = _default_policy(target_algo)
+    source_policy = _default_policy(source_algo)
+    target_weights = target_policy.get_weights()
+    source_weights = source_policy.get_weights()
+    _validate_policy_weight_compatibility(
+        source_weights,
+        target_weights,
+        source_checkpoint=source_checkpoint,
+    )
+    target_policy.set_weights(source_weights)
+
+
+def _default_policy(algo: Any) -> Any:
+    getter = getattr(algo, "get_policy", None)
+    if not callable(getter):
+        raise SystemExit("RLlib Algorithm does not expose get_policy(); cannot transfer weights.")
+    for args in ((), ("default_policy",), ("__default_policy__",)):
+        try:
+            policy = getter(*args)
+        except TypeError:
+            continue
+        if policy is not None:
+            return policy
+    raise SystemExit("Could not locate the default RLlib policy for checkpoint transfer.")
+
+
+def _validate_policy_weight_compatibility(
+    source_weights: dict[str, Any],
+    target_weights: dict[str, Any],
+    *,
+    source_checkpoint: str,
+) -> None:
+    source_keys = set(source_weights)
+    target_keys = set(target_weights)
+    if source_keys != target_keys:
+        missing = sorted(target_keys - source_keys)
+        extra = sorted(source_keys - target_keys)
+        raise SystemExit(
+            "RLlib policy weights are incompatible with the current model. "
+            f"Missing keys={missing[:8]} extra keys={extra[:8]} source={source_checkpoint}"
+        )
+    mismatches: list[str] = []
+    for key in sorted(source_keys):
+        source_shape = _weight_shape(source_weights[key])
+        target_shape = _weight_shape(target_weights[key])
+        if source_shape != target_shape:
+            mismatches.append(f"{key}: source={source_shape} target={target_shape}")
+    if mismatches:
+        details = "; ".join(mismatches[:8])
+        raise SystemExit(
+            "RLlib policy/value shapes are incompatible with the current stage. "
+            "Check encoder_mode/action_space/model architecture. "
+            f"{details} source={source_checkpoint}"
+        )
+
+
+def _weight_shape(value: Any) -> tuple[int, ...]:
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        try:
+            return tuple(int(dim) for dim in shape)
+        except TypeError:
+            pass
+    try:
+        return tuple(int(dim) for dim in np.asarray(value).shape)
+    except Exception:
+        return ()
+
+
+def _validate_checkpoint_metadata_compatibility(
+    config: dict[str, Any],
+    checkpoint_path: str,
+    *,
+    mode: str,
+    logger: logging.Logger,
+) -> None:
+    metadata = _read_checkpoint_metadata(checkpoint_path)
+    if not metadata:
+        logger.warning(
+            "No checkpoint_metadata.json found for %s; compatibility will be checked by RLlib/weight shapes only.",
+            checkpoint_path,
+        )
+        return
+
+    source_game = str(metadata.get("game_version", "") or "")
+    current_game = str(config.get("_game_key", "") or "")
+    if source_game and current_game and source_game != current_game:
+        raise SystemExit(
+            f"Checkpoint game_version mismatch for {mode}: source={source_game} current={current_game}"
+        )
+
+    source_engine = metadata.get("engine") if isinstance(metadata.get("engine"), dict) else {}
+    source_encoder = str(source_engine.get("sts2_encoder_mode", "") or "")
+    current_encoder = str(config.get("sts2_encoder_mode", "") or "")
+    if source_encoder and current_encoder and source_encoder != current_encoder:
+        raise SystemExit(
+            "Checkpoint encoder_mode mismatch. "
+            f"source={source_encoder} current={current_encoder}. "
+            "Use the same --sts2-encoder-mode or train a separate stage."
+        )
+
+    source_model = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
+    if source_model:
+        expected_model = {
+            "custom_model": RLLIB_CUSTOM_MODEL_NAME,
+            "fcnet_hiddens": [64, 64],
+            "vf_share_layers": False,
+        }
+        for key, expected in expected_model.items():
+            actual = source_model.get(key)
+            if actual is not None and actual != expected:
+                raise SystemExit(
+                    f"Checkpoint model architecture mismatch for {mode}: "
+                    f"{key} source={actual!r} current={expected!r}"
+                )
+
+
+def _warn_resume_stage_safety(
+    config: dict[str, Any],
+    checkpoint_dir: str,
+    resume_from: str,
+    logger: logging.Logger,
+) -> None:
+    metadata = _read_checkpoint_metadata(resume_from)
+    source_stage = str(metadata.get("training_stage", "") if metadata else "")
+    current_stage = str(config.get("_training_stage", "") or config.get("training_stage", "") or "")
+    if source_stage and current_stage and source_stage != current_stage:
+        logger.warning(
+            "--resume-from restores a full RLlib Algorithm from stage %r while the current stage is %r. "
+            "Use --init-from-rllib for curriculum transfer into a fresh stage.",
+            source_stage,
+            current_stage,
+        )
+    resolved_resume = os.path.abspath(resume_from)
+    resolved_checkpoint_dir = os.path.abspath(checkpoint_dir)
+    if os.path.normcase(resolved_resume) == os.path.normcase(resolved_checkpoint_dir):
+        if source_stage and current_stage and source_stage != current_stage:
+            logger.warning(
+                "--resume-from points at the same path as --checkpoint-dir but training_stage changed. "
+                "This can overwrite or confuse stage boundaries."
+            )
+
+
+def _read_checkpoint_metadata(checkpoint_path: str) -> dict[str, Any]:
+    metadata_path = _checkpoint_metadata_path(checkpoint_path)
+    if not metadata_path:
+        return {}
+    try:
+        with open(metadata_path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _checkpoint_metadata_path(checkpoint_path: str) -> str:
+    candidates = [
+        os.path.join(os.path.abspath(checkpoint_path), CHECKPOINT_METADATA_FILENAME),
+        os.path.join(
+            os.path.dirname(os.path.abspath(checkpoint_path)),
+            CHECKPOINT_METADATA_FILENAME,
+        ),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
     return ""
 
 

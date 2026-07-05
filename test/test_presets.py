@@ -181,6 +181,17 @@ class TestPresets:
         assert preset["seed"] == 20260705
         assert preset["workers"] == 4
 
+    def test_regression_eval_presets_are_eval_only(self) -> None:
+        exact = load_preset("eval_c0_the_kin_exact")
+        five_decks = load_preset("eval_c1_the_kin_5_decks")
+        random_safe = load_preset("eval_c2_the_kin_random_safe")
+
+        assert exact["eval_only"] is True
+        assert exact["timesteps"] == 0
+        assert exact["deck_mode"] == "fixed_the_kin_overfit"
+        assert five_decks["curriculum_mix"] == "c1_the_kin_5_decks:1.0"
+        assert random_safe["curriculum_mix"] == "c2_the_kin_random_safe:1.0"
+
 
 
 

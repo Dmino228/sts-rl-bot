@@ -54,6 +54,34 @@ Useful flags:
 --run-notes "Starter combat-only baseline"
 ```
 
+Two checkpoint entry modes are intentionally separate:
+
+- `--resume-from <checkpoint>` restores the full RLlib Algorithm. Use this only
+  to continue the same stage, including optimizer state and counters.
+- `--init-from-rllib <checkpoint>` builds a fresh Algorithm for the current
+  stage, transfers compatible policy/value weights, and leaves optimizer state
+  and training iteration fresh. Use this for curriculum transfer into a new
+  checkpoint directory.
+
+Example stage transfer:
+
+```powershell
+python rllib\train_rllib.py `
+  --preset boss_train_overfit_the_kin_fixed_deck `
+  --init-from-rllib models\rllib\sts2\previous_stage\checkpoint_000123 `
+  --training-stage overfit_the_kin_fixed_deck_v2 `
+  --sts2-cli-path <path>
+```
+
+Safety rules:
+
+- explicit `--resume-from` wins over auto-resume in the target stage and is
+  logged clearly.
+- encoder/model/weight shape mismatches fail fast.
+- `checkpoint_metadata.json` records the source checkpoint and transfer mode.
+- use a new `--training-stage` for stage transfer so the source checkpoint is
+  preserved.
+
 ## Minimal Combat Curriculum Hook
 
 The first STS2 curriculum profile is intentionally small and disabled by
@@ -239,7 +267,42 @@ Crash diagnostics include the selected encounter, turn/combat step, hand card
 IDs/names/costs/playability, selected card/target, a bounded recent trace, and
 the latest stderr tail.
 
-Deck randomization and per-character C1/C2 schedules are still later stages.
+Regression eval presets:
+
+```powershell
+python rllib\train_rllib.py `
+  --preset eval_c0_the_kin_exact `
+  --resume-from <checkpoint> `
+  --sts2-cli-path <path>
+
+python rllib\train_rllib.py `
+  --preset eval_c1_the_kin_5_decks `
+  --resume-from <checkpoint> `
+  --sts2-cli-path <path>
+
+python rllib\train_rllib.py `
+  --preset eval_c2_the_kin_random_safe `
+  --resume-from <checkpoint> `
+  --sts2-cli-path <path>
+```
+
+These are `eval_only` presets: they run deterministic PPO combat eval and do
+not save a new checkpoint.
+
+Mixed curriculum pools can protect old skills during stage transfer:
+
+```powershell
+--curriculum-mix c0_the_kin_exact:0.8,c1_the_kin_5_decks:0.2
+```
+
+Known named profiles:
+
+- `c0_the_kin_exact`: exact overfit THE_KIN_BOSS deck/relic/potion/HP.
+- `c1_the_kin_5_decks`: fixed THE_KIN_BOSS with a small deterministic safe-deck pool.
+- `c2_the_kin_random_safe`: fixed THE_KIN_BOSS with random safe boss decks.
+
+Deck randomization and per-character schedules beyond these small profiles are
+still later stages.
 Do not call a deck mode realistic until it is generated from real full-run
 combat snapshots or from a floor-conditioned Act 1 deck model.
 

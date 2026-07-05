@@ -305,6 +305,7 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_debug_episodes=int(_config_value(env_config, "sts2_debug_episodes", 0)),
         sts2_seed=_config_value(env_config, "sts2_seed", None),
         deck_mode=str(_config_value(env_config, "deck_mode", "")),
+        curriculum_mix=str(_config_value(env_config, "curriculum_mix", "")),
         sts2_debug_jsonl_path=_optional_str(
             _config_value(env_config, "sts2_debug_jsonl_path", "")
         ),

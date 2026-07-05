@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import json
+import logging
 from typing import Any, Optional
 
 import gymnasium as gym
@@ -247,6 +248,8 @@ def test_checkpoint_metadata_payload_records_curriculum_fields(tmp_path):
     assert payload["source_checkpoint"] is None
     assert payload["notes"] == "Starter combat-only baseline"
     assert payload["heuristic_mode"] == "hard"
+    assert payload["transfer_mode"] == "fresh_or_auto_resume"
+    assert payload["model"]["custom_model"] == train_rllib.RLLIB_CUSTOM_MODEL_NAME
     assert payload["training"]["workers"] == 8
     assert payload["engine"]["sts2_curriculum_mode"] == "combat"
     assert payload["engine"]["sts2_combat_encounter"] == "SHRINKER_BEETLE_WEAK"
@@ -305,6 +308,68 @@ def test_write_checkpoint_metadata_places_json_next_to_checkpoint(tmp_path):
     assert payload["source_checkpoint"] == os.path.abspath(
         str(tmp_path / "source_checkpoint")
     )
+
+
+def test_init_from_rllib_source_checkpoint_records_transfer_mode(tmp_path):
+    from rllib import train_rllib
+
+    config = {
+        "training_stage": "c1",
+        "character": "Ironclad",
+        "init_from_rllib": str(tmp_path / "checkpoint_000001"),
+    }
+
+    payload = train_rllib._checkpoint_metadata_payload(
+        config,
+        "sts2",
+        total_steps=0,
+        checkpoint_path=str(tmp_path / "new_checkpoint"),
+        source_checkpoint=str(tmp_path / "checkpoint_000001"),
+    )
+
+    assert payload["transfer_mode"] == "init_from_rllib"
+    assert payload["source_checkpoint"] == os.path.abspath(
+        str(tmp_path / "checkpoint_000001")
+    )
+
+
+def test_policy_weight_compatibility_rejects_shape_mismatch():
+    from rllib import train_rllib
+
+    with pytest.raises(SystemExit, match="shapes are incompatible"):
+        train_rllib._validate_policy_weight_compatibility(
+            {"layer": np.zeros((2, 2), dtype=np.float32)},
+            {"layer": np.zeros((3, 2), dtype=np.float32)},
+            source_checkpoint="source",
+        )
+
+
+def test_resolve_checkpoint_input_path_uses_latest_child_checkpoint(tmp_path):
+    from rllib import train_rllib
+
+    older = tmp_path / "checkpoint_000001"
+    newer = tmp_path / "checkpoint_000002"
+    older.mkdir()
+    newer.mkdir()
+    (older / "algorithm_state.pkl").write_text("", encoding="utf-8")
+    (newer / "algorithm_state.pkl").write_text("", encoding="utf-8")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    assert train_rllib._resolve_checkpoint_input_path(str(tmp_path)) == str(newer)
+
+
+def test_preflight_validates_curriculum_mix():
+    from rllib import preflight
+
+    logger = logging.getLogger("test_preflight_validates_curriculum_mix")
+    preflight._validate_curriculum_mix(
+        {"curriculum_mix": "c0_the_kin_exact:0.8,c1_the_kin_5_decks:0.2"},
+        logger,
+    )
+
+    with pytest.raises(SystemExit, match="Invalid --curriculum-mix"):
+        preflight._validate_curriculum_mix({"curriculum_mix": "bad_profile:1"}, logger)
 
 
 def test_train_rllib_resolves_executable_from_path(tmp_path):

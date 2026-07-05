@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import time
 import gymnasium as gym
 from gymnasium import spaces
@@ -11,6 +12,7 @@ from collections import Counter, deque
 from typing import Optional, Tuple, Dict, Any, List
 
 from engine_factory import create_game_engine
+from sts2.curriculum_profiles import sample_curriculum_profile
 from sts2.deck_generator import build_combat_deck_spec
 from sts2.encounters import combat_pool_ids
 
@@ -84,6 +86,7 @@ class SlayTheSpireEnv(gym.Env):
         sts2_deck_duplicate_cap: int = 2,
         sts2_deck_allow_problematic_cards: bool = False,
         sts2_encoder_mode: str = "compact",
+        curriculum_mix: str = "",
     ) -> None:
         super().__init__()
 
@@ -162,15 +165,23 @@ class SlayTheSpireEnv(gym.Env):
             fixed_encounter=self.sts2_combat_encounter,
         )
         self._current_combat_encounter = self._combat_encounter_pool[0]
+        self._current_combat_encounter_pool = list(self._combat_encounter_pool)
+        self._current_combat_enemy_pool = self.sts2_combat_enemy_pool
         self.sts2_combat_damage_reward_scale = float(sts2_combat_damage_reward_scale)
         self.sts2_combat_hp_loss_reward_scale = float(sts2_combat_hp_loss_reward_scale)
         self.sts2_combat_action_penalty = float(sts2_combat_action_penalty)
         self.sts2_debug_episodes = max(0, int(sts2_debug_episodes))
         self.sts2_seed = sts2_seed
         self.deck_mode = str(deck_mode or "").strip().lower() or "unspecified"
+        self.curriculum_mix = str(curriculum_mix or "").strip()
+        self._current_deck_mode = self.deck_mode
         self.sts2_deck_duplicate_cap = max(1, int(sts2_deck_duplicate_cap))
         self.sts2_deck_allow_problematic_cards = bool(sts2_deck_allow_problematic_cards)
         self.sts2_debug_jsonl_path = str(sts2_debug_jsonl_path or "").strip()
+        self._curriculum_mix_rng = random.Random(
+            f"{self.sts2_seed}|{self.worker_id}|{self.curriculum_mix}"
+        )
+        self._current_curriculum_profile = ""
         self._debug_jsonl_failed = False
         self._episode_index = 0
         self._combat_initial_hp: Optional[int] = None
@@ -349,20 +360,56 @@ class SlayTheSpireEnv(gym.Env):
         """Merge shared reset options with STS2 curriculum defaults."""
         reset_options = dict(options or {})
         if self.game_version == "sts2":
+            profile_options: Dict[str, Any] = {}
+            self._current_curriculum_profile = ""
+            if self.curriculum_mix:
+                profile = sample_curriculum_profile(
+                    self.curriculum_mix,
+                    rng=self._curriculum_mix_rng,
+                )
+                if profile is not None:
+                    self._current_curriculum_profile = profile.name
+                    profile_options = dict(profile.options)
             reset_options.setdefault("curriculum_mode", self.sts2_curriculum_mode)
-            reset_options.setdefault("combat_room_type", self.sts2_combat_room_type)
-            reset_options.setdefault("combat_encounter", self._select_combat_encounter())
+            reset_options.setdefault(
+                "combat_room_type",
+                profile_options.get("combat_room_type", self.sts2_combat_room_type),
+            )
+            selected_pool = str(
+                profile_options.get("combat_enemy_pool", self.sts2_combat_enemy_pool)
+            )
+            self._current_combat_enemy_pool = selected_pool
+            self._current_combat_encounter_pool = combat_pool_ids(
+                selected_pool,
+                fixed_encounter=str(
+                    profile_options.get("combat_encounter", self.sts2_combat_encounter)
+                ),
+            )
+            if "combat_encounter" not in reset_options:
+                if profile_options.get("combat_encounter"):
+                    reset_options["combat_encounter"] = str(profile_options["combat_encounter"])
+                else:
+                    reset_options["combat_encounter"] = self._select_combat_encounter(
+                        self._current_combat_encounter_pool,
+                    )
+            if profile_options.get("run_seed") is not None:
+                reset_options.setdefault("seed", profile_options["run_seed"])
             if self.sts2_seed is not None:
                 reset_options.setdefault("seed", self.sts2_seed)
             self._current_combat_encounter = str(reset_options["combat_encounter"])
             self._current_deck_spec = {}
+            self._current_deck_mode = str(
+                profile_options.get("deck_mode", self.deck_mode)
+            ).strip().lower() or "unspecified"
             if self._is_combat_curriculum():
                 deck_spec = build_combat_deck_spec(
-                    mode=self.deck_mode,
+                    mode=self._current_deck_mode,
                     character=self.character_class,
-                    seed=reset_options.get("seed", seed),
+                    seed=profile_options.get("deck_seed", reset_options.get("seed", seed)),
                     worker_id=self.worker_id,
-                    episode_id=self._episode_index + 1,
+                    episode_id=int(
+                        profile_options.get("deck_episode_id", self._episode_index + 1)
+                    ),
                     duplicate_cap=self.sts2_deck_duplicate_cap,
                     allow_problematic_cards=self.sts2_deck_allow_problematic_cards,
                 )
@@ -1241,14 +1288,15 @@ class SlayTheSpireEnv(gym.Env):
     def _is_combat_curriculum(self) -> bool:
         return self.game_version == "sts2" and self.sts2_curriculum_mode == "combat"
 
-    def _select_combat_encounter(self) -> str:
+    def _select_combat_encounter(self, pool: Optional[List[str]] = None) -> str:
         if not self._is_combat_curriculum():
             return self.sts2_combat_encounter
-        if len(self._combat_encounter_pool) == 1:
-            self._current_combat_encounter = self._combat_encounter_pool[0]
+        encounter_pool = list(pool or self._combat_encounter_pool)
+        if len(encounter_pool) == 1:
+            self._current_combat_encounter = encounter_pool[0]
             return self._current_combat_encounter
-        index = int(self.np_random.integers(0, len(self._combat_encounter_pool)))
-        self._current_combat_encounter = self._combat_encounter_pool[index]
+        index = int(self.np_random.integers(0, len(encounter_pool)))
+        self._current_combat_encounter = encounter_pool[index]
         return self._current_combat_encounter
 
     def _uses_combat_reward_mode(self) -> bool:
@@ -1578,12 +1626,13 @@ class SlayTheSpireEnv(gym.Env):
             ),
             "cards_played_by_id": dict(self._combat_cards_played_by_id),
             "encounter_id": self._current_combat_encounter,
-            "encounter_pool": self.sts2_combat_enemy_pool,
-            "encounter_pool_ids": list(self._combat_encounter_pool),
+            "encounter_pool": self._current_combat_enemy_pool,
+            "encounter_pool_ids": list(self._current_combat_encounter_pool),
             "terminated_reason": reason,
-            "deck_mode": self.deck_mode,
+            "deck_mode": self._current_deck_mode,
             "deck_source": self._deck_source(),
             "deck_size": self._last_combat_reset_debug.get("deck_size", 0),
+            "curriculum_profile": self._current_curriculum_profile,
         }
 
     @staticmethod
@@ -1620,9 +1669,10 @@ class SlayTheSpireEnv(gym.Env):
             "worker_id": self.worker_id,
             "episode": self._episode_index,
             "encounter_id": self._current_combat_encounter,
-            "encounter_pool": self.sts2_combat_enemy_pool,
-            "deck_mode": self.deck_mode,
+            "encounter_pool": self._current_combat_enemy_pool,
+            "deck_mode": self._current_deck_mode,
             "deck_source": self._deck_source(),
+            "curriculum_profile": self._current_curriculum_profile,
             "deck_size": self._safe_int(
                 player.get("deck_size", game_state.get("deck_size")),
                 len(deck),
@@ -1662,6 +1712,7 @@ class SlayTheSpireEnv(gym.Env):
             "[STS2 COMBAT RESET] "
             f"worker={self.worker_id} episode={self._episode_index} "
             f"encounter={reset.get('encounter_id')} deck_mode={reset.get('deck_mode')} "
+            f"profile={reset.get('curriculum_profile')} "
             f"deck_source={reset.get('deck_source')} deck_size={reset.get('deck_size')} "
             f"hp={reset.get('current_hp')}/{reset.get('max_hp')} "
             f"added={[card.get('name', card.get('id')) for card in reset.get('added_cards', [])]} "

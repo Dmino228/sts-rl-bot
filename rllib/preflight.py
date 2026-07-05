@@ -23,6 +23,7 @@ def run_preflight(
         _validate_enemy_pool_non_empty(config, logger)
         _warn_combat_mode_with_full_reward(config, logger)
         _validate_sts2_deck_mode(config, logger)
+        _validate_curriculum_mix(config, logger)
         _warn_expensive_eval(config, logger)
 
     _warn_worker_count(config, game_key, logger)
@@ -224,6 +225,22 @@ def _warn_expensive_eval(
         )
 
 
+def _validate_curriculum_mix(
+    config: dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    mix = str(config.get("curriculum_mix", "") or "").strip()
+    if not mix:
+        return
+    try:
+        from sts2.curriculum_profiles import parse_curriculum_mix
+
+        entries = parse_curriculum_mix(mix)
+    except Exception as exc:
+        raise SystemExit(f"Invalid --curriculum-mix: {exc}") from exc
+    logger.info("STS2 curriculum mix: %s", ", ".join(f"{n}:{w:g}" for n, w in entries))
+
+
 def _warn_worker_count(
     config: dict[str, Any],
     game_key: str,
@@ -269,6 +286,7 @@ def _print_experiment_summary(
             f"  Reward mode:         {config.get('sts2_reward_mode', 'full_v3_2')}",
             f"  Enemy pool:          {config.get('sts2_combat_enemy_pool', 'fixed')}",
             f"  Deck mode:           {config.get('deck_mode', 'unspecified') or 'unspecified'}",
+            f"  Curriculum mix:      {config.get('curriculum_mix', '') or 'n/a'}",
             f"  Heuristic mode:      {config.get('heuristic_mode', 'none')}",
         ])
 
@@ -276,6 +294,8 @@ def _print_experiment_summary(
         f"  Workers:             {config.get('workers', 0)} x {config.get('envs_per_worker', 1)}",
         f"  Timesteps:           {config.get('timesteps', 0):,}",
         f"  Checkpoint dir:      {config.get('_checkpoint_dir', 'unset')}",
+        f"  Resume from:         {config.get('resume_from', '') or 'n/a'}",
+        f"  Init from RLlib:     {config.get('init_from_rllib', '') or 'n/a'}",
         f"  Run folder:          {config.get('_run_folder_path', 'unset')}",
         f"  Console mode:        {config.get('console_mode', 'compact')}",
     ])

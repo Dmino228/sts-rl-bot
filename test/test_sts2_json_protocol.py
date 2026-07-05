@@ -1169,3 +1169,26 @@ def test_sts2_env_can_select_flat_encoder_mode():
     assert isinstance(env.state_encoder, StS2StateEncoderFlat)
     assert env.observation_space.shape == (7231,)
     env.close()
+
+
+def test_sts2_curriculum_mix_c0_overrides_reset_options():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        curriculum_mix="c0_the_kin_exact:1.0",
+        deck_mode="starter",
+        sts2_combat_enemy_pool="act1_boss",
+        sts2_combat_encounter="VANTOM_BOSS",
+    )
+
+    options = env._engine_reset_options(None, seed=7)
+    deck_spec = options["deck_spec"]
+
+    assert options["combat_encounter"] == "THE_KIN_BOSS"
+    assert options["seed"] == 20260705
+    assert env._current_curriculum_profile == "c0_the_kin_exact"
+    assert env._current_deck_mode == "fixed_the_kin_overfit"
+    assert deck_spec["mode"] == "fixed_the_kin_overfit"
+    assert deck_spec["apply_to_headless"] is True
+    env.close()

@@ -155,6 +155,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g_ckpt.add_argument("--resume-from", default=None)
     g_ckpt.add_argument("--no-auto-resume", action="store_true", default=None)
     g_ckpt.add_argument("--init-from-sb3", default=None)
+    g_ckpt.add_argument("--init-from-rllib", default=None)
+    g_ckpt.add_argument(
+        "--curriculum-mix",
+        default=None,
+        help=(
+            "Weighted STS2 curriculum profile mix, e.g. "
+            "c0_the_kin_exact:0.8,c1_the_kin_5_decks:0.2"
+        ),
+    )
 
     # -- Evaluation ---------------------------------------------------------
     g_eval = parser.add_argument_group("evaluation")
@@ -165,6 +174,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g_eval.add_argument("--eval-combat-freq", type=int, default=None)
     g_eval.add_argument("--eval-combat-deterministic", action="store_true", default=None)
     g_eval.add_argument("--eval-sts2-recycle-every-episodes", type=int, default=None)
+    g_eval.add_argument("--eval-only", action="store_true", default=None)
 
     # -- Timeouts / fault tolerance -----------------------------------------
     g_ft = parser.add_argument_group("timeouts / fault tolerance")
@@ -320,6 +330,7 @@ def build_env_config(config: dict[str, Any]) -> dict[str, Any]:
             else ""
         ),
         "deck_mode": config.get("deck_mode", ""),
+        "curriculum_mix": config.get("curriculum_mix", ""),
         "sts2_deck_duplicate_cap": int(config.get("sts2_deck_duplicate_cap", 2) or 2),
         "sts2_deck_allow_problematic_cards": bool(
             config.get("sts2_deck_allow_problematic_cards", False)
@@ -406,6 +417,8 @@ _DEFAULTS: dict[str, Any] = {
     "resume_from": "",
     "no_auto_resume": False,
     "init_from_sb3": "",
+    "init_from_rllib": "",
+    "curriculum_mix": "",
     "eval_random_baseline": 0,
     "eval_greedy_baseline": 0,
     "eval_random_baseline_freq": 0,
@@ -413,6 +426,7 @@ _DEFAULTS: dict[str, Any] = {
     "eval_combat_freq": None,
     "eval_combat_deterministic": False,
     "eval_sts2_recycle_every_episodes": None,
+    "eval_only": False,
     "process_timeout_s": None,
     "sample_timeout_s": None,
     "train_heartbeat_s": 30.0,
