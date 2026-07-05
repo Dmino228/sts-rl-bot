@@ -109,3 +109,21 @@ def test_random_floor_bucket_logs_bucket_and_floor() -> None:
     assert spec.synthetic_floor is not None
     assert spec.apply_to_headless is True
     assert 1 <= spec.synthetic_floor <= 16
+
+
+def test_random_boss_synthetic_safe_adds_stronger_resources() -> None:
+    spec = build_combat_deck_spec(
+        mode="random_boss_synthetic_safe",
+        seed=123,
+        worker_id=1,
+        episode_id=5,
+    )
+    starter_ids = set(IRONCLAD_STARTER_DECK)
+
+    assert spec.apply_to_headless is True
+    assert spec.source == "synthetic_boss_safe_ironclad"
+    assert len(spec.cards) > len(IRONCLAD_STARTER_DECK)
+    assert any(card.id not in starter_ids for card in spec.cards)
+    assert len(spec.relics) >= 2
+    assert spec.potions
+    assert spec.hp >= 68

@@ -94,7 +94,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     g_sts2.add_argument(
         "--sts2-reward-mode",
-        choices=["full_v3_2", "combat_sparse", "combat_dense"],
+        choices=["full_v3_2", "combat_sparse", "combat_dense", "combat_boss_potential"],
         default=None,
     )
     g_sts2.add_argument("--sts2-combat-room-type", default=None)
@@ -106,6 +106,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g_sts2.add_argument("--sts2-debug-episodes", type=int, default=None)
     g_sts2.add_argument("--sts2-deck-duplicate-cap", type=int, default=None)
     g_sts2.add_argument("--sts2-deck-allow-problematic-cards", action="store_true", default=None)
+    g_sts2.add_argument(
+        "--sts2-encoder-mode",
+        choices=["compact", "flat"],
+        default=None,
+    )
     g_sts2.add_argument("--sts2-capture-stderr", action="store_true", default=None)
     g_sts2.add_argument("--sts2-recycle-every-episodes", type=int, default=None)
     g_sts2.add_argument("--sts2-recycle-every-steps", type=int, default=None)
@@ -136,7 +141,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g_ckpt.add_argument("--training-stage", default=None)
     g_ckpt.add_argument(
         "--deck-mode",
-        choices=["starter", "random_synthetic", "random_act1_floor_bucket"],
+        choices=[
+            "starter",
+            "random_synthetic",
+            "random_act1_floor_bucket",
+            "random_boss_synthetic_safe",
+        ],
         default=None,
     )
     g_ckpt.add_argument("--enemy-pool", default=None)
@@ -148,6 +158,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # -- Evaluation ---------------------------------------------------------
     g_eval = parser.add_argument_group("evaluation")
     g_eval.add_argument("--eval-random-baseline", type=int, default=None)
+    g_eval.add_argument("--eval-greedy-baseline", type=int, default=None)
     g_eval.add_argument("--eval-random-baseline-freq", type=int, default=None)
     g_eval.add_argument("--eval-combat-episodes", type=int, default=None)
     g_eval.add_argument("--eval-combat-freq", type=int, default=None)
@@ -312,6 +323,7 @@ def build_env_config(config: dict[str, Any]) -> dict[str, Any]:
         "sts2_deck_allow_problematic_cards": bool(
             config.get("sts2_deck_allow_problematic_cards", False)
         ),
+        "sts2_encoder_mode": config.get("sts2_encoder_mode", "compact"),
         "process_timeout": float(config.get("process_timeout_s", 120.0) or 120.0),
         "ascension": int(config.get("ascension", 0) or 0),
         "sts2_lang": config.get("sts2_lang", "en"),
@@ -371,6 +383,7 @@ _DEFAULTS: dict[str, Any] = {
     "sts2_debug_episodes": 0,
     "sts2_deck_duplicate_cap": 2,
     "sts2_deck_allow_problematic_cards": False,
+    "sts2_encoder_mode": "compact",
     "sts2_capture_stderr": False,
     "sts2_recycle_every_episodes": None,
     "sts2_recycle_every_steps": 0,
@@ -393,6 +406,7 @@ _DEFAULTS: dict[str, Any] = {
     "no_auto_resume": False,
     "init_from_sb3": "",
     "eval_random_baseline": 0,
+    "eval_greedy_baseline": 0,
     "eval_random_baseline_freq": 0,
     "eval_combat_episodes": 0,
     "eval_combat_freq": None,

@@ -157,6 +157,20 @@ class TestPresets:
         assert all("random_deck" not in name for name in names)
         assert all(preset.get("deck_mode") != "random_controlled" for preset in PRESETS.values())
 
+    def test_boss_fixed_safe_deck_preset_properties(self) -> None:
+        preset = load_preset("boss_debug_fixed_the_kin_safe_deck")
+        assert preset["sts2_combat_enemy_pool"] == "fixed"
+        assert preset["sts2_combat_encounter"] == "THE_KIN_BOSS"
+        assert preset["deck_mode"] == "random_boss_synthetic_safe"
+        assert preset["sts2_reward_mode"] == "combat_boss_potential"
+        assert preset["eval_greedy_baseline"] == 10
+
+    def test_boss_train_floor_bucket_preset_properties(self) -> None:
+        preset = load_preset("boss_train_act1_boss_floor_bucket")
+        assert preset["sts2_combat_enemy_pool"] == "act1_boss"
+        assert preset["deck_mode"] == "random_act1_floor_bucket"
+        assert preset["sts2_reward_mode"] == "combat_boss_potential"
+
 
 
 

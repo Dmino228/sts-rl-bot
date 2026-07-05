@@ -410,3 +410,85 @@ memory/process stability
 -> behavior cloning from heuristic labels
 -> multi-character expansion
 ```
+
+## Boss Curriculum Diagnostics
+
+The first long boss-only run showed a clear plateau pattern: dense combat reward
+improved early, but `boss_win_rate` stayed around 0-3%. This means survival and
+partial damage are learnable, but the task is not yet proven feasible for PPO
+with the current random deck distribution and compact encoder.
+
+Before another long boss-only run, use short feasibility checks:
+
+```powershell
+python rllib\train_rllib.py --preset boss_debug_fixed_the_kin_starter --sts2-cli-path <path>
+python rllib\train_rllib.py --preset boss_debug_fixed_the_kin_safe_deck --sts2-cli-path <path>
+python rllib\train_rllib.py --preset boss_train_fixed_the_kin_random_synthetic --sts2-cli-path <path>
+```
+
+Available fixed boss debug/train presets are generated for:
+
+- `ceremonial_beast`
+- `the_kin`
+- `vantom`
+
+For wider boss training:
+
+```powershell
+python rllib\train_rllib.py --preset boss_train_act1_boss_floor_bucket --sts2-cli-path <path>
+```
+
+New boss-specific metrics:
+
+- `avg_boss_hp_remaining_on_loss`
+- `avg_boss_hp_fraction_removed`
+- `avg_min_boss_hp_reached`
+- `avg_damage_dealt_total`
+- `avg_turns_survived`
+- `win_rate_by_boss`
+- `hp_lost_by_boss`
+- `boss_hp_remaining_by_boss`
+
+New action-quality metrics:
+
+- `end_turn_with_energy_rate`
+- `end_turn_with_playable_attack_rate`
+- `end_turn_with_playable_block_when_incoming_damage_rate`
+- `block_when_incoming_damage_rate`
+- `power_play_rate`
+- `cards_played_by_id`
+
+Use baselines on the same encounter and deck distribution:
+
+```powershell
+python rllib\train_rllib.py `
+  --preset boss_debug_fixed_the_kin_safe_deck `
+  --sts2-cli-path <path> `
+  --eval-random-baseline 100 `
+  --eval-greedy-baseline 100 `
+  --dry-run
+```
+
+The `random_boss_synthetic_safe` deck mode is a synthetic feasibility tool, not
+a realistic Act 1 model. It starts from the Ironclad starter deck, adds more
+block/scaling cards, adds 1-2 simple relics and one potion, and logs the exact
+deck/relic/potion setup.
+
+The `combat_boss_potential` reward mode is intended for boss feasibility tests:
+
+- `+10` terminal win
+- `-1` terminal loss
+- `-3` timeout
+- per-step normalized boss HP reduction
+- smaller normalized player HP loss penalty
+- one-shot boss HP milestones at 75/50/25%
+
+Encoder experiments can be run with:
+
+```powershell
+--sts2-encoder-mode compact
+--sts2-encoder-mode flat
+```
+
+The flat encoder includes card/relic/potion/monster identity one-hots and changes
+the observation shape, so keep its checkpoints in a separate training stage.

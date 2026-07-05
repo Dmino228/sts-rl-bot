@@ -762,6 +762,108 @@ PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+_BOSS_FIXED_PRESETS = {
+    "ceremonial_beast": "CEREMONIAL_BEAST_BOSS",
+    "the_kin": "THE_KIN_BOSS",
+    "vantom": "VANTOM_BOSS",
+}
+
+
+def _boss_debug_preset(
+    *,
+    boss_key: str,
+    encounter: str,
+    deck_mode: str,
+    suffix: str,
+) -> dict[str, Any]:
+    return {
+        "game_version": "2",
+        "sts2_curriculum_mode": "combat",
+        "sts2_reward_mode": "combat_boss_potential",
+        "sts2_combat_enemy_pool": "fixed",
+        "sts2_combat_encounter": encounter,
+        "training_stage": f"debug_boss_fixed_{boss_key}_{suffix}",
+        "workers": 1,
+        "envs_per_worker": 1,
+        "timesteps": 10_000,
+        "eval_combat_episodes": 10,
+        "eval_combat_freq": 3,
+        "eval_random_baseline": 10,
+        "eval_greedy_baseline": 10,
+        "eval_random_baseline_freq": 0,
+        "sts2_debug_episodes": 3,
+        "console_mode": "verbose",
+        "character": "Ironclad",
+        "deck_mode": deck_mode,
+        "enemy_pool": "act1_boss",
+    }
+
+
+def _boss_train_fixed_preset(*, boss_key: str, encounter: str) -> dict[str, Any]:
+    return {
+        "game_version": "2",
+        "sts2_curriculum_mode": "combat",
+        "sts2_reward_mode": "combat_boss_potential",
+        "sts2_combat_enemy_pool": "fixed",
+        "sts2_combat_encounter": encounter,
+        "training_stage": f"boss_c0_fixed_{boss_key}_random_synthetic",
+        "workers": 8,
+        "envs_per_worker": 1,
+        "timesteps": 1_000_000,
+        "eval_combat_episodes": 100,
+        "eval_combat_freq": 10,
+        "eval_combat_deterministic": True,
+        "eval_random_baseline": 100,
+        "eval_greedy_baseline": 100,
+        "eval_random_baseline_freq": 0,
+        "checkpoint_freq": 10,
+        "console_mode": "compact",
+        "character": "Ironclad",
+        "deck_mode": "random_synthetic",
+        "enemy_pool": "act1_boss",
+    }
+
+
+for _boss_key, _encounter in _BOSS_FIXED_PRESETS.items():
+    PRESETS[f"boss_debug_fixed_{_boss_key}_starter"] = _boss_debug_preset(
+        boss_key=_boss_key,
+        encounter=_encounter,
+        deck_mode="starter",
+        suffix="starter",
+    )
+    PRESETS[f"boss_debug_fixed_{_boss_key}_safe_deck"] = _boss_debug_preset(
+        boss_key=_boss_key,
+        encounter=_encounter,
+        deck_mode="random_boss_synthetic_safe",
+        suffix="safe_deck",
+    )
+    PRESETS[f"boss_train_fixed_{_boss_key}_random_synthetic"] = (
+        _boss_train_fixed_preset(boss_key=_boss_key, encounter=_encounter)
+    )
+
+PRESETS["boss_train_act1_boss_floor_bucket"] = {
+    "game_version": "2",
+    "sts2_curriculum_mode": "combat",
+    "sts2_reward_mode": "combat_boss_potential",
+    "sts2_combat_enemy_pool": "act1_boss",
+    "training_stage": "boss_c1_act1_boss_floor_bucket",
+    "workers": 8,
+    "envs_per_worker": 1,
+    "timesteps": 1_000_000,
+    "eval_combat_episodes": 100,
+    "eval_combat_freq": 10,
+    "eval_combat_deterministic": True,
+    "eval_random_baseline": 100,
+    "eval_greedy_baseline": 100,
+    "eval_random_baseline_freq": 0,
+    "checkpoint_freq": 10,
+    "console_mode": "compact",
+    "character": "Ironclad",
+    "deck_mode": "random_act1_floor_bucket",
+    "enemy_pool": "act1_boss",
+}
+
+
 def list_presets() -> list[str]:
     """Return sorted preset names."""
     return sorted(PRESETS)

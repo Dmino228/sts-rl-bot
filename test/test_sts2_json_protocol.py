@@ -824,6 +824,81 @@ def test_sts2_combat_sparse_loss_is_negative_terminal_reward():
     env.close()
 
 
+def test_sts2_combat_loss_reports_last_known_boss_hp_without_combat_state():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_dense",
+        sts2_combat_encounter="THE_KIN_BOSS",
+    )
+    env.current_state = {
+        "in_game": False,
+        "game_state": {
+            "screen_type": "GAME_OVER",
+            "current_hp": 0,
+            "max_hp": 80,
+        },
+    }
+    env._current_combat_encounter = "THE_KIN_BOSS"
+    env._combat_initial_hp = 80
+    env._combat_initial_monster_hp = 180
+    env._combat_last_monster_hp = 42
+    env._combat_min_monster_hp = 42
+    env._combat_damage_dealt_total = 138
+    env._last_done_reason = "loss"
+
+    metrics = env._combat_progress_metrics()
+
+    assert metrics["boss_hp_remaining_on_loss"] == 42.0
+    assert metrics["monster_hp_remaining_on_loss"] == 42.0
+    assert metrics["boss_hp_fraction_removed"] == pytest.approx(138 / 180)
+    assert metrics["damage_dealt_total"] == 138.0
+    env.close()
+
+
+def test_sts2_combat_boss_metrics_track_primary_boss_not_adds():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_curriculum_mode="combat",
+        sts2_reward_mode="combat_boss_potential",
+        sts2_combat_encounter="THE_KIN_BOSS",
+    )
+    env.current_state = {
+        "in_game": True,
+        "game_state": {
+            "screen_type": "NONE",
+            "current_hp": 10,
+            "max_hp": 80,
+            "combat_state": {
+                "monsters": [
+                    {"current_hp": 58, "max_hp": 58},
+                    {"current_hp": 42, "max_hp": 59},
+                    {"current_hp": 150, "max_hp": 190},
+                ],
+            },
+        },
+    }
+    env._current_combat_encounter = "THE_KIN_BOSS"
+    env._combat_initial_hp = 80
+    env._combat_initial_monster_hp = 307
+    env._combat_initial_boss_hp = 190
+    env._combat_last_monster_hp = 250
+    env._combat_last_boss_hp = 150
+    env._combat_min_monster_hp = 250
+    env._combat_min_boss_hp = 150
+    env._last_done_reason = "loss"
+
+    metrics = env._combat_progress_metrics()
+
+    assert metrics["monster_hp_remaining_on_loss"] == 250.0
+    assert metrics["boss_hp_remaining_on_loss"] == 150.0
+    assert metrics["boss_hp_fraction_removed"] == pytest.approx(40 / 190)
+    assert metrics["min_boss_hp_reached"] == 150.0
+    env.close()
+
+
 def test_sts2_combat_sparse_does_not_apply_full_run_macro_rewards():
     env = SlayTheSpireEnv(
         game_version=2,
@@ -1082,3 +1157,15 @@ def test_sts2_flat_encoder_shape():
     assert encoded.shape == (7231,)
     assert np.all(encoded >= -1.0)
     assert np.all(encoded <= 1.0)
+
+
+def test_sts2_env_can_select_flat_encoder_mode():
+    env = SlayTheSpireEnv(
+        game_version=2,
+        sts2_cli_path="fake-sts2-cli",
+        sts2_encoder_mode="flat",
+    )
+
+    assert isinstance(env.state_encoder, StS2StateEncoderFlat)
+    assert env.observation_space.shape == (7231,)
+    env.close()

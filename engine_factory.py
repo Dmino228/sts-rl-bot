@@ -20,7 +20,7 @@ def normalize_game_version(game_version: Any) -> str:
     )
 
 
-def create_game_engine(game_version: Any = 1) -> GameEngine:
+def create_game_engine(game_version: Any = 1, **options: Any) -> GameEngine:
     """Instantiate the engine strategy for the requested game version."""
     normalized = normalize_game_version(game_version)
     if normalized == "sts1":
@@ -30,5 +30,5 @@ def create_game_engine(game_version: Any = 1) -> GameEngine:
     if normalized == "sts2":
         from sts2.engine import StS2Engine
 
-        return StS2Engine()
+        return StS2Engine(encoder_mode=str(options.get("sts2_encoder_mode", "compact")))
     raise AssertionError(f"Unhandled normalized game version: {normalized}")

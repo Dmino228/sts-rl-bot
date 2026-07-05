@@ -71,6 +71,25 @@ class ProgressMetricsCallback(DefaultCallbacks):
                 combat.get("monster_hp_remaining_on_loss"),
                 0.0,
             )
+            for metric_name in (
+                "boss_hp_remaining_on_loss",
+                "boss_hp_fraction_removed",
+                "min_boss_hp_reached",
+                "damage_dealt_total",
+                "turns_survived",
+                "end_turn_with_energy",
+                "end_turn_with_energy_rate",
+                "end_turn_with_playable_attack",
+                "end_turn_with_playable_attack_rate",
+                "end_turn_with_playable_block_when_incoming_damage",
+                "end_turn_with_playable_block_when_incoming_damage_rate",
+                "power_play_rate",
+                "block_when_incoming_damage_rate",
+            ):
+                episode.custom_metrics[metric_name] = _safe_float(
+                    combat.get(metric_name),
+                    0.0,
+                )
             episode.custom_metrics["deck_size"] = _safe_float(
                 combat.get("deck_size"),
                 0.0,
@@ -95,6 +114,10 @@ class ProgressMetricsCallback(DefaultCallbacks):
             category = classify_encounter(raw_encounter)
             is_win = float(_safe_float(combat.get("combat_win"), 0.0))
             hp_lost = _safe_float(combat.get("hp_lost"), 0.0)
+            boss_hp_loss_remaining = _safe_float(
+                combat.get("boss_hp_remaining_on_loss"),
+                0.0,
+            )
             for cat in ("weak", "normal", "elite", "boss"):
                 in_category = category == cat
                 episode.custom_metrics[f"{cat}_win_count"] = is_win if in_category else 0.0
@@ -105,6 +128,34 @@ class ProgressMetricsCallback(DefaultCallbacks):
                 # true category rates from win_count / encounter_count.
                 episode.custom_metrics[f"{cat}_win_rate"] = is_win if in_category else 0.0
                 episode.custom_metrics[f"{cat}_avg_hp_lost"] = hp_lost if in_category else 0.0
+            for known_encounter in pool_ids:
+                known_key = _metric_key(known_encounter)
+                if not known_key:
+                    continue
+                in_encounter = known_key == encounter
+                is_boss = classify_encounter(str(known_encounter)) == "boss"
+                if is_boss:
+                    episode.custom_metrics[f"boss_{known_key}_fight_count"] = float(
+                        in_encounter
+                    )
+                    episode.custom_metrics[f"boss_{known_key}_win_count"] = (
+                        is_win if in_encounter else 0.0
+                    )
+                    episode.custom_metrics[f"boss_{known_key}_hp_lost_sum"] = (
+                        hp_lost if in_encounter else 0.0
+                    )
+                    episode.custom_metrics[f"boss_{known_key}_hp_remaining_on_loss_sum"] = (
+                        boss_hp_loss_remaining if in_encounter else 0.0
+                    )
+            cards_played = combat.get("cards_played_by_id")
+            if isinstance(cards_played, dict):
+                for raw_card_id, count in cards_played.items():
+                    card_key = _metric_key(raw_card_id)
+                    if card_key:
+                        episode.custom_metrics[f"card_played_{card_key}"] = _safe_float(
+                            count,
+                            0.0,
+                        )
 
     @staticmethod
     def _record_progress(episode: Any, info: Any) -> None:
@@ -133,6 +184,20 @@ class ProgressMetricsCallback(DefaultCallbacks):
             "hp_remaining_on_win",
             "hp_lost",
             "monster_hp_remaining_on_loss",
+            "boss_hp_remaining_on_loss",
+            "boss_hp_fraction_removed",
+            "min_boss_hp_reached",
+            "damage_dealt_total",
+            "turns_survived",
+            "end_turn_with_energy",
+            "end_turn_with_energy_rate",
+            "end_turn_with_playable_attack",
+            "end_turn_with_playable_attack_rate",
+            "end_turn_with_playable_block_when_incoming_damage",
+            "end_turn_with_playable_block_when_incoming_damage_rate",
+            "power_play_rate",
+            "block_when_incoming_damage_rate",
+            "cards_played_by_id",
             "encounter_id",
             "encounter_pool",
             "encounter_pool_ids",

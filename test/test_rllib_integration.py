@@ -486,17 +486,26 @@ def test_progress_metrics_callback_aggregates_combat_info():
     episode = FakeEpisode()
     callback.on_episode_start(episode=episode)
     episode._info = {
-        "progress_metrics": {
-            "combat_win": 1.0,
-            "combat_loss": 0.0,
-            "combat_timeout": 0.0,
-            "combat_steps": 7,
-            "hp_remaining_on_win": 42,
-            "hp_lost": 8,
-            "monster_hp_remaining_on_loss": 0,
-            "encounter_id": "SHRINKER_BEETLE_WEAK",
-            "encounter_pool_ids": ["SHRINKER_BEETLE_WEAK", "FLYCONID_WEAK"],
-            "terminated_reason": "win",
+            "progress_metrics": {
+                "combat_win": 1.0,
+                "combat_loss": 0.0,
+                "combat_timeout": 0.0,
+                "combat_steps": 7,
+                "hp_remaining_on_win": 42,
+                "hp_lost": 8,
+                "monster_hp_remaining_on_loss": 0,
+                "boss_hp_remaining_on_loss": 0,
+                "boss_hp_fraction_removed": 1.0,
+                "min_boss_hp_reached": 0,
+                "damage_dealt_total": 30,
+                "turns_survived": 4,
+                "end_turn_with_energy_rate": 0.25,
+                "power_play_rate": 0.5,
+                "block_when_incoming_damage_rate": 0.75,
+                "cards_played_by_id": {"CARD.BASH": 2},
+                "encounter_id": "SHRINKER_BEETLE_WEAK",
+                "encounter_pool_ids": ["SHRINKER_BEETLE_WEAK", "FLYCONID_WEAK"],
+                "terminated_reason": "win",
         }
     }
     callback.on_episode_end(episode=episode)
@@ -508,6 +517,13 @@ def test_progress_metrics_callback_aggregates_combat_info():
     assert episode.custom_metrics["avg_hp_remaining_on_win"] == 42.0
     assert episode.custom_metrics["avg_hp_lost"] == 8.0
     assert episode.custom_metrics["avg_monster_hp_remaining_on_loss"] == 0.0
+    assert episode.custom_metrics["boss_hp_fraction_removed"] == 1.0
+    assert episode.custom_metrics["damage_dealt_total"] == 30.0
+    assert episode.custom_metrics["turns_survived"] == 4.0
+    assert episode.custom_metrics["end_turn_with_energy_rate"] == 0.25
+    assert episode.custom_metrics["power_play_rate"] == 0.5
+    assert episode.custom_metrics["block_when_incoming_damage_rate"] == 0.75
+    assert episode.custom_metrics["card_played_CARD_BASH"] == 2.0
     assert episode.custom_metrics["encounter_id_SHRINKER_BEETLE_WEAK"] == 1.0
     assert episode.custom_metrics["encounter_id_FLYCONID_WEAK"] == 0.0
     assert episode.custom_metrics["terminated_reason_win"] == 1.0
@@ -636,6 +652,8 @@ def test_train_rllib_manual_combat_eval_stats_by_encounter():
                 "encounter_id": "A",
                 "combat_steps": 10,
                 "hp_lost": 3,
+                "boss_hp_remaining_on_loss": 0,
+                "damage_dealt_total": 40,
             }
         },
     )
@@ -647,6 +665,8 @@ def test_train_rllib_manual_combat_eval_stats_by_encounter():
                 "encounter_id": "A",
                 "combat_steps": 20,
                 "hp_lost": 15,
+                "boss_hp_remaining_on_loss": 25,
+                "damage_dealt_total": 55,
             }
         },
     )
@@ -658,6 +678,8 @@ def test_train_rllib_manual_combat_eval_stats_by_encounter():
                 "encounter_id": "B",
                 "combat_steps": 8,
                 "hp_lost": 1,
+                "boss_hp_remaining_on_loss": 0,
+                "damage_dealt_total": 60,
             }
         },
     )
@@ -668,8 +690,35 @@ def test_train_rllib_manual_combat_eval_stats_by_encounter():
     assert metrics["combat_loss_rate"] == pytest.approx(1 / 3)
     assert metrics["avg_combat_steps"] == pytest.approx(38 / 3)
     assert metrics["avg_hp_lost"] == pytest.approx(19 / 3)
+    assert metrics["avg_boss_hp_remaining_on_loss"] == pytest.approx(25 / 3)
+    assert metrics["avg_damage_dealt_total"] == pytest.approx(155 / 3)
     assert metrics["win_rate_by_encounter"] == "A:0.50,B:1.00"
     assert metrics["avg_hp_lost_by_encounter"] == "A:9.00,B:1.00"
+    assert metrics["avg_boss_hp_remaining_by_encounter"] == "A:12.50,B:0.00"
+    assert metrics["avg_damage_dealt_by_encounter"] == "A:47.50,B:60.00"
+
+
+def test_train_rllib_boss_by_encounter_metrics_use_boss_denominator():
+    from rllib import train_rllib
+
+    result = {
+        "custom_metrics": {
+            "boss_THE_KIN_BOSS_fight_count_mean": 0.25,
+            "boss_THE_KIN_BOSS_win_count_mean": 0.05,
+            "boss_THE_KIN_BOSS_hp_lost_sum_mean": 20.0,
+            "boss_THE_KIN_BOSS_hp_remaining_on_loss_sum_mean": 12.5,
+            "boss_VANTOM_BOSS_fight_count_mean": 0.75,
+            "boss_VANTOM_BOSS_win_count_mean": 0.0,
+            "boss_VANTOM_BOSS_hp_lost_sum_mean": 60.0,
+            "boss_VANTOM_BOSS_hp_remaining_on_loss_sum_mean": 45.0,
+        }
+    }
+
+    combat = train_rllib._combat_log_metrics(result)
+
+    assert combat["win_rate_by_boss"] == "THE_KIN_BOSS:0.20,VANTOM_BOSS:0.00"
+    assert combat["hp_lost_by_boss"] == "THE_KIN_BOSS:80.00,VANTOM_BOSS:80.00"
+    assert combat["boss_hp_remaining_by_boss"] == "THE_KIN_BOSS:50.00,VANTOM_BOSS:60.00"
 
 
 def test_result_env_step_delta_prefers_this_iter_metric():
@@ -716,6 +765,7 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
             "deck_mode": "starter",
             "sts2_deck_duplicate_cap": 3,
             "sts2_deck_allow_problematic_cards": True,
+            "sts2_encoder_mode": "flat",
             "sts2_debug_jsonl_path": str(tmp_path / "debug_episodes.jsonl"),
         }
     )
@@ -738,6 +788,7 @@ def test_make_sts_rllib_env_passes_process_timeout(tmp_path, monkeypatch):
     assert captured_kwargs["deck_mode"] == "starter"
     assert captured_kwargs["sts2_deck_duplicate_cap"] == 3
     assert captured_kwargs["sts2_deck_allow_problematic_cards"] is True
+    assert captured_kwargs["sts2_encoder_mode"] == "flat"
     assert captured_kwargs["sts2_debug_jsonl_path"].endswith("debug_episodes.jsonl")
 
 

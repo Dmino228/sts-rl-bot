@@ -7,7 +7,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import sys
-from collections import deque
+from collections import Counter, deque
 from typing import Optional, Tuple, Dict, Any, List
 
 from engine_factory import create_game_engine
@@ -83,10 +83,15 @@ class SlayTheSpireEnv(gym.Env):
         sts2_debug_jsonl_path: Optional[str] = None,
         sts2_deck_duplicate_cap: int = 2,
         sts2_deck_allow_problematic_cards: bool = False,
+        sts2_encoder_mode: str = "compact",
     ) -> None:
         super().__init__()
 
-        self.engine = create_game_engine(game_version)
+        self.sts2_encoder_mode = str(sts2_encoder_mode or "compact").strip().lower()
+        self.engine = create_game_engine(
+            game_version,
+            sts2_encoder_mode=self.sts2_encoder_mode,
+        )
         self.game_version = self.engine.game_version
         self.character_class = self.engine.normalize_character(character_class)
         self.engine.validate_character(self.character_class)
@@ -170,6 +175,24 @@ class SlayTheSpireEnv(gym.Env):
         self._episode_index = 0
         self._combat_initial_hp: Optional[int] = None
         self._combat_initial_monster_hp: Optional[int] = None
+        self._combat_last_monster_hp: Optional[int] = None
+        self._combat_min_monster_hp: Optional[int] = None
+        self._combat_damage_dealt_total: float = 0.0
+        self._combat_initial_boss_hp: Optional[int] = None
+        self._combat_last_boss_hp: Optional[int] = None
+        self._combat_min_boss_hp: Optional[int] = None
+        self._combat_boss_damage_dealt_total: float = 0.0
+        self._combat_max_turn: int = 0
+        self._combat_boss_milestones_awarded: set[float] = set()
+        self._combat_end_turn_count: int = 0
+        self._combat_end_turn_with_energy: int = 0
+        self._combat_end_turn_with_playable_attack: int = 0
+        self._combat_end_turn_with_playable_block_when_incoming: int = 0
+        self._combat_incoming_steps: int = 0
+        self._combat_block_when_incoming_count: int = 0
+        self._combat_cards_played_count: int = 0
+        self._combat_power_played_count: int = 0
+        self._combat_cards_played_by_id: Counter[str] = Counter()
         self._last_combat_reset_debug: Dict[str, Any] = {}
         self._current_deck_spec: Dict[str, Any] = {}
         self._last_reward_parts: Dict[str, float] = {}
@@ -605,6 +628,7 @@ class SlayTheSpireEnv(gym.Env):
             return
         action_summary = self._describe_action(command, state)
         self._last_action_summary = action_summary
+        self._record_action_quality(command, state, action_summary)
         self._recent_combat_trace.append(
             {
                 "encounter_id": self._current_combat_encounter,
@@ -616,6 +640,47 @@ class SlayTheSpireEnv(gym.Env):
                 "enemies": self._enemy_debug(state),
             }
         )
+
+    def _record_action_quality(
+        self,
+        command: Any,
+        state: Dict[str, Any],
+        action_summary: Any,
+    ) -> None:
+        if not isinstance(command, dict):
+            return
+        if not self._is_in_combat(state):
+            return
+        incoming_damage = self._incoming_damage(state)
+        if incoming_damage > 0:
+            self._combat_incoming_steps += 1
+        action = str(command.get("action") or "")
+        if action == "end_turn":
+            self._combat_end_turn_count += 1
+            player = self._state_player(state)
+            if self._safe_int(player.get("energy"), 0) > 0:
+                self._combat_end_turn_with_energy += 1
+            if self._has_playable_card_type(state, "attack"):
+                self._combat_end_turn_with_playable_attack += 1
+            player_block = self._safe_int(player.get("block"), 0)
+            if (
+                incoming_damage > player_block
+                and self._has_playable_block_card(state)
+            ):
+                self._combat_end_turn_with_playable_block_when_incoming += 1
+            return
+
+        if action == "play_card" and isinstance(action_summary, dict):
+            card = action_summary.get("chosen_card")
+            if isinstance(card, dict):
+                self._combat_cards_played_count += 1
+                card_id = str(card.get("id") or card.get("name") or "UNKNOWN")
+                self._combat_cards_played_by_id[card_id] += 1
+                card_type = str(card.get("type") or "").lower()
+                if card_type == "power":
+                    self._combat_power_played_count += 1
+                if incoming_damage > 0 and self._card_block_value(card) > 0:
+                    self._combat_block_when_incoming_count += 1
 
     def _describe_action(self, command: Any, state: Dict[str, Any]) -> Any:
         if not isinstance(command, dict):
@@ -636,6 +701,48 @@ class SlayTheSpireEnv(gym.Env):
                 if target_index >= 0:
                     summary["target"] = self._enemy_target_debug(target, target_index)
         return summary
+
+    def _incoming_damage(self, state: Dict[str, Any]) -> int:
+        total = 0
+        for enemy in self._state_enemies(state):
+            if not isinstance(enemy, dict):
+                continue
+            if enemy.get("is_gone", False):
+                continue
+            for intent in enemy.get("intents") or []:
+                if not isinstance(intent, dict):
+                    continue
+                intent_type = str(intent.get("type") or "").lower()
+                if "attack" in intent_type:
+                    total += self._safe_int(intent.get("damage"), 0)
+            for key in ("intent_damage", "damage"):
+                if enemy.get(key) is not None:
+                    total += self._safe_int(enemy.get(key), 0)
+                    break
+        return max(0, total)
+
+    def _has_playable_card_type(self, state: Dict[str, Any], card_type: str) -> bool:
+        wanted = card_type.strip().lower()
+        for card in self._state_hand(state):
+            if not isinstance(card, dict) or not bool(card.get("can_play", True)):
+                continue
+            if str(card.get("type") or "").lower() == wanted:
+                return True
+        return False
+
+    def _has_playable_block_card(self, state: Dict[str, Any]) -> bool:
+        for card in self._state_hand(state):
+            if not isinstance(card, dict) or not bool(card.get("can_play", True)):
+                continue
+            if self._card_block_value(card) > 0:
+                return True
+        return False
+
+    def _card_block_value(self, card: Dict[str, Any]) -> int:
+        stats = card.get("stats")
+        if isinstance(stats, dict) and stats.get("block") is not None:
+            return self._safe_int(stats.get("block"), 0)
+        return self._safe_int(card.get("block"), 0)
 
     def _state_turn(self, state: Dict[str, Any]) -> Any:
         if not isinstance(state, dict):
@@ -768,6 +875,10 @@ class SlayTheSpireEnv(gym.Env):
             "cost": card.get("cost"),
             "can_play": card.get("can_play"),
             "target_type": card.get("target_type"),
+            "type": card.get("type"),
+            "stats": card.get("stats"),
+            "block": card.get("block"),
+            "damage": card.get("damage"),
         }
         if slot is not None:
             result["slot"] = slot
@@ -889,14 +1000,54 @@ class SlayTheSpireEnv(gym.Env):
 
     def _get_total_monster_hp(self, game_state: Dict[str, Any]) -> int:
         """Sum current_hp of all alive monsters."""
+        observed = self._get_total_monster_hp_observed(game_state)
+        return int(observed) if observed is not None else 0
+
+    def _get_total_monster_hp_observed(self, game_state: Dict[str, Any]) -> Optional[int]:
+        """Return monster HP only when the current state still exposes monsters."""
         combat_state = game_state.get("combat_state", {})
-        if not combat_state:
-            return 0
+        if not isinstance(combat_state, dict) or not combat_state:
+            return None
         monsters = combat_state.get("monsters", [])
+        if not isinstance(monsters, list):
+            return None
         return sum(
             m.get("current_hp", 0)
             for m in monsters
+            if isinstance(m, dict)
             if not m.get("is_gone", False)
+        )
+
+    def _get_primary_boss_hp_observed(self, game_state: Dict[str, Any]) -> Optional[int]:
+        """Return HP for the likely primary boss monster when visible.
+
+        Act 1 boss encounters can include adds. For diagnostics and boss-specific
+        reward shaping we use the living monster with the largest max HP as the
+        primary boss proxy.
+        """
+        combat_state = game_state.get("combat_state", {})
+        if not isinstance(combat_state, dict) or not combat_state:
+            return None
+        monsters = combat_state.get("monsters", [])
+        if not isinstance(monsters, list):
+            return None
+        candidates = [
+            monster
+            for monster in monsters
+            if isinstance(monster, dict) and not monster.get("is_gone", False)
+        ]
+        if not candidates:
+            return None
+        boss = max(
+            candidates,
+            key=lambda monster: (
+                self._safe_int(monster.get("max_hp"), 0),
+                self._safe_int(monster.get("current_hp"), 0),
+            ),
+        )
+        return self._safe_int(
+            boss.get("current_hp", boss.get("hp")),
+            0,
         )
 
     def _count_upgraded_cards(self, game_state: Dict[str, Any]) -> int:
@@ -1104,12 +1255,31 @@ class SlayTheSpireEnv(gym.Env):
         return self._is_combat_curriculum() and self.sts2_reward_mode in {
             "combat_sparse",
             "combat_dense",
+            "combat_boss_potential",
         }
 
     def _reset_combat_episode_tracking(self) -> None:
         self._last_done_reason = ""
         self._last_reward_parts = {}
         self._last_action_summary = None
+        self._combat_last_monster_hp = None
+        self._combat_min_monster_hp = None
+        self._combat_damage_dealt_total = 0.0
+        self._combat_initial_boss_hp = None
+        self._combat_last_boss_hp = None
+        self._combat_min_boss_hp = None
+        self._combat_boss_damage_dealt_total = 0.0
+        self._combat_max_turn = 0
+        self._combat_boss_milestones_awarded.clear()
+        self._combat_end_turn_count = 0
+        self._combat_end_turn_with_energy = 0
+        self._combat_end_turn_with_playable_attack = 0
+        self._combat_end_turn_with_playable_block_when_incoming = 0
+        self._combat_incoming_steps = 0
+        self._combat_block_when_incoming_count = 0
+        self._combat_cards_played_count = 0
+        self._combat_power_played_count = 0
+        self._combat_cards_played_by_id.clear()
         if not self._is_combat_curriculum():
             self._combat_initial_hp = None
             self._combat_initial_monster_hp = None
@@ -1123,6 +1293,14 @@ class SlayTheSpireEnv(gym.Env):
 
         self._combat_initial_hp = self._current_player_hp(game_state)
         self._combat_initial_monster_hp = self._get_total_monster_hp(game_state)
+        self._combat_last_monster_hp = self._combat_initial_monster_hp
+        self._combat_min_monster_hp = self._combat_initial_monster_hp
+        self._combat_initial_boss_hp = (
+            self._get_primary_boss_hp_observed(game_state)
+            or self._combat_initial_monster_hp
+        )
+        self._combat_last_boss_hp = self._combat_initial_boss_hp
+        self._combat_min_boss_hp = self._combat_initial_boss_hp
         self.last_player_hp = self._combat_initial_hp
         self.last_monster_total_hp = self._combat_initial_monster_hp
         self.last_in_combat = self._is_in_combat(self.current_state)
@@ -1139,12 +1317,46 @@ class SlayTheSpireEnv(gym.Env):
 
         self.combat_step_count += 1
         current_hp = self._current_player_hp(game_state)
-        current_monster_hp = self._get_total_monster_hp(game_state)
         done_reason = self._combat_done_reason(game_state, current_hp)
         self._last_done_reason = done_reason
+        observed_monster_hp = self._get_total_monster_hp_observed(game_state)
+        if observed_monster_hp is None:
+            if done_reason == "win":
+                current_monster_hp = 0
+            else:
+                current_monster_hp = (
+                    self._combat_last_monster_hp
+                    if self._combat_last_monster_hp is not None
+                    else self.last_monster_total_hp
+                    if self.last_monster_total_hp is not None
+                    else 0
+                )
+        else:
+            current_monster_hp = observed_monster_hp
+        observed_boss_hp = self._get_primary_boss_hp_observed(game_state)
+        if observed_boss_hp is None:
+            if done_reason == "win":
+                current_boss_hp = 0
+            else:
+                current_boss_hp = (
+                    self._combat_last_boss_hp
+                    if self._combat_last_boss_hp is not None
+                    else current_monster_hp
+                )
+        else:
+            current_boss_hp = observed_boss_hp
+        self._update_combat_potential_tracking(current_monster_hp, current_boss_hp)
 
         parts: Dict[str, float] = {}
-        if done_reason == "win":
+        if self.sts2_reward_mode == "combat_boss_potential":
+            parts.update(
+                self._combat_boss_potential_reward_parts(
+                    done_reason=done_reason,
+                    current_hp=current_hp,
+                    current_boss_hp=current_boss_hp,
+                )
+            )
+        elif done_reason == "win":
             parts["terminal_win"] = 1.0
         elif done_reason in {"loss", "timeout"}:
             parts[f"terminal_{done_reason}"] = -1.0
@@ -1163,10 +1375,67 @@ class SlayTheSpireEnv(gym.Env):
         self.last_player_hp = current_hp
         self.last_max_hp = self._current_player_max_hp(game_state)
         self.last_monster_total_hp = current_monster_hp
+        self._combat_last_monster_hp = current_monster_hp
+        self._combat_last_boss_hp = current_boss_hp
         self.last_screen_type = str(game_state.get("screen_type", "NONE"))
         self.last_in_combat = self._is_in_combat(self.current_state)
         self.step_count += 1
         return reward
+
+    def _update_combat_potential_tracking(
+        self,
+        current_monster_hp: int,
+        current_boss_hp: int,
+    ) -> None:
+        if self._combat_min_monster_hp is None:
+            self._combat_min_monster_hp = current_monster_hp
+        else:
+            self._combat_min_monster_hp = min(self._combat_min_monster_hp, current_monster_hp)
+        if self._combat_last_monster_hp is not None:
+            self._combat_damage_dealt_total += float(
+                max(0, self._combat_last_monster_hp - current_monster_hp)
+            )
+        if self._combat_min_boss_hp is None:
+            self._combat_min_boss_hp = current_boss_hp
+        else:
+            self._combat_min_boss_hp = min(self._combat_min_boss_hp, current_boss_hp)
+        if self._combat_last_boss_hp is not None:
+            self._combat_boss_damage_dealt_total += float(
+                max(0, self._combat_last_boss_hp - current_boss_hp)
+            )
+        turn_value = self._safe_int(self._state_turn(self.current_state), 0)
+        self._combat_max_turn = max(self._combat_max_turn, turn_value)
+
+    def _combat_boss_potential_reward_parts(
+        self,
+        *,
+        done_reason: str,
+        current_hp: Optional[int],
+        current_boss_hp: int,
+    ) -> Dict[str, float]:
+        parts: Dict[str, float] = {}
+        initial_boss_hp = max(1, int(self._combat_initial_boss_hp or self._combat_initial_monster_hp or 0))
+        if self._combat_last_boss_hp is not None:
+            damage_delta = max(0, self._combat_last_boss_hp - current_boss_hp)
+            parts["boss_hp_fraction_removed"] = float(damage_delta) / float(initial_boss_hp)
+        if self.last_player_hp is not None and current_hp is not None:
+            hp_delta = max(0, self.last_player_hp - current_hp)
+            initial_hp = max(1, int(self._combat_initial_hp or self.last_player_hp or 1))
+            parts["player_hp_fraction_lost"] = -0.35 * float(hp_delta) / float(initial_hp)
+        for threshold in (0.75, 0.50, 0.25):
+            if threshold in self._combat_boss_milestones_awarded:
+                continue
+            if current_boss_hp <= initial_boss_hp * threshold:
+                parts[f"boss_hp_below_{int(threshold * 100)}"] = 0.25
+                self._combat_boss_milestones_awarded.add(threshold)
+        parts["action_penalty"] = -self.sts2_combat_action_penalty
+        if done_reason == "win":
+            parts["terminal_win"] = 10.0
+        elif done_reason == "loss":
+            parts["terminal_loss"] = -1.0
+        elif done_reason == "timeout":
+            parts["terminal_timeout"] = -3.0
+        return parts
 
     def _combat_done_reason(
         self,
@@ -1212,12 +1481,60 @@ class SlayTheSpireEnv(gym.Env):
         if not isinstance(game_state, dict):
             game_state = {}
         current_hp = self._current_player_hp(game_state)
-        monster_hp = self._get_total_monster_hp(game_state)
         reason = self._last_done_reason or "ongoing"
+        observed_monster_hp = self._get_total_monster_hp_observed(game_state)
+        if observed_monster_hp is None:
+            monster_hp = (
+                0
+                if reason == "win"
+                else self._combat_last_monster_hp
+                if self._combat_last_monster_hp is not None
+                else 0
+            )
+        else:
+            monster_hp = observed_monster_hp
+        observed_boss_hp = self._get_primary_boss_hp_observed(game_state)
+        if observed_boss_hp is None:
+            boss_hp = (
+                0
+                if reason == "win"
+                else self._combat_last_boss_hp
+                if self._combat_last_boss_hp is not None
+                else monster_hp
+            )
+        else:
+            boss_hp = observed_boss_hp
         hp_initial = self._combat_initial_hp
         hp_lost = 0.0
         if hp_initial is not None and current_hp is not None:
             hp_lost = float(max(0, hp_initial - current_hp))
+        initial_monster_hp = float(max(0, self._combat_initial_monster_hp or 0))
+        min_monster_hp = float(
+            self._combat_min_monster_hp
+            if self._combat_min_monster_hp is not None
+            else monster_hp
+        )
+        damage_dealt_total = float(max(0.0, initial_monster_hp - min_monster_hp))
+        if self._combat_damage_dealt_total > damage_dealt_total:
+            damage_dealt_total = float(self._combat_damage_dealt_total)
+        initial_boss_hp = float(
+            max(0, self._combat_initial_boss_hp or self._combat_initial_monster_hp or 0)
+        )
+        min_boss_hp = float(
+            self._combat_min_boss_hp
+            if self._combat_min_boss_hp is not None
+            else boss_hp
+        )
+        boss_damage_dealt_total = float(max(0.0, initial_boss_hp - min_boss_hp))
+        if self._combat_boss_damage_dealt_total > boss_damage_dealt_total:
+            boss_damage_dealt_total = float(self._combat_boss_damage_dealt_total)
+        boss_fraction_removed = (
+            min(1.0, max(0.0, boss_damage_dealt_total / initial_boss_hp))
+            if initial_boss_hp > 0
+            else 0.0
+        )
+        monster_hp_remaining_on_loss = float(monster_hp) if reason == "loss" else 0.0
+        boss_hp_remaining_on_loss = float(boss_hp) if reason == "loss" else 0.0
 
         return {
             "combat_win": float(reason == "win"),
@@ -1226,7 +1543,40 @@ class SlayTheSpireEnv(gym.Env):
             "combat_steps": float(self.combat_step_count),
             "hp_remaining_on_win": float(current_hp or 0) if reason == "win" else 0.0,
             "hp_lost": hp_lost,
-            "monster_hp_remaining_on_loss": float(monster_hp) if reason == "loss" else 0.0,
+            "monster_hp_remaining_on_loss": monster_hp_remaining_on_loss,
+            "boss_hp_remaining_on_loss": boss_hp_remaining_on_loss,
+            "boss_hp_fraction_removed": boss_fraction_removed,
+            "min_boss_hp_reached": min_boss_hp,
+            "damage_dealt_total": damage_dealt_total,
+            "turns_survived": float(self._combat_max_turn),
+            "end_turn_with_energy": float(self._combat_end_turn_with_energy),
+            "end_turn_with_energy_rate": self._safe_ratio(
+                self._combat_end_turn_with_energy,
+                self._combat_end_turn_count,
+            ),
+            "end_turn_with_playable_attack": float(
+                self._combat_end_turn_with_playable_attack
+            ),
+            "end_turn_with_playable_attack_rate": self._safe_ratio(
+                self._combat_end_turn_with_playable_attack,
+                self._combat_end_turn_count,
+            ),
+            "end_turn_with_playable_block_when_incoming_damage": float(
+                self._combat_end_turn_with_playable_block_when_incoming
+            ),
+            "end_turn_with_playable_block_when_incoming_damage_rate": self._safe_ratio(
+                self._combat_end_turn_with_playable_block_when_incoming,
+                self._combat_end_turn_count,
+            ),
+            "power_play_rate": self._safe_ratio(
+                self._combat_power_played_count,
+                self._combat_cards_played_count,
+            ),
+            "block_when_incoming_damage_rate": self._safe_ratio(
+                self._combat_block_when_incoming_count,
+                self._combat_incoming_steps,
+            ),
+            "cards_played_by_id": dict(self._combat_cards_played_by_id),
             "encounter_id": self._current_combat_encounter,
             "encounter_pool": self.sts2_combat_enemy_pool,
             "encounter_pool_ids": list(self._combat_encounter_pool),
@@ -1235,6 +1585,16 @@ class SlayTheSpireEnv(gym.Env):
             "deck_source": self._deck_source(),
             "deck_size": self._last_combat_reset_debug.get("deck_size", 0),
         }
+
+    @staticmethod
+    def _safe_ratio(numerator: int | float, denominator: int | float) -> float:
+        try:
+            denom = float(denominator)
+            if denom <= 0.0:
+                return 0.0
+            return float(numerator) / denom
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0.0
 
     def _build_combat_reset_debug(self) -> Dict[str, Any]:
         game_state = self.current_state.get("game_state", {})

@@ -13,7 +13,11 @@ from engine import (
 )
 from sts2.action_space import StS2ActionMapper, StS2ActionMasker
 from sts2.process_manager import StS2CliProcessManager
-from sts2.state_encoder import StS2StateEncoder, normalize_sts2_state
+from sts2.state_encoder import (
+    StS2StateEncoder,
+    StS2StateEncoderFlat,
+    normalize_sts2_state,
+)
 
 
 VALID_STS2_CHARACTERS = frozenset(
@@ -22,11 +26,25 @@ VALID_STS2_CHARACTERS = frozenset(
 CHARACTER_ALIASES = {name.lower(): name for name in VALID_STS2_CHARACTERS}
 
 
+def _normalize_encoder_mode(raw: str | None) -> str:
+    mode = str(raw or "compact").strip().lower().replace("-", "_")
+    if mode in {"", "compact", "default"}:
+        return "compact"
+    if mode in {"flat", "identity", "card_id", "card_ids", "codex_flat"}:
+        return "flat"
+    raise ValueError(
+        f"Unsupported STS2 encoder mode: {raw!r}. Expected 'compact' or 'flat'."
+    )
+
+
 class StS2Engine(GameEngine):
     """Concrete engine for the headless C#/.NET sts2-cli pipeline."""
 
     game_version = "sts2"
     valid_characters = VALID_STS2_CHARACTERS
+
+    def __init__(self, *, encoder_mode: str = "compact") -> None:
+        self.encoder_mode = _normalize_encoder_mode(encoder_mode)
 
     def create_process_manager(
         self,
@@ -58,6 +76,8 @@ class StS2Engine(GameEngine):
         )
 
     def create_state_encoder(self) -> StateEncoderProtocol:
+        if self.encoder_mode == "flat":
+            return StS2StateEncoderFlat()
         return StS2StateEncoder()
 
     def create_action_mapper(self) -> ActionMapperProtocol:

@@ -18,6 +18,7 @@ SUPPORTED_DECK_MODES = frozenset(
         "starter",
         "random_synthetic",
         "random_act1_floor_bucket",
+        "random_boss_synthetic_safe",
     }
 )
 
@@ -50,6 +51,33 @@ DEFAULT_EXCLUDED_CARD_IDS = frozenset(
         "CARD.SECOND_WIND",
         "CARD.TRUE_GRIT",
     }
+)
+
+BOSS_SAFE_CARD_WEIGHTS: tuple[tuple[str, int], ...] = (
+    ("SHRUG_IT_OFF", 4),
+    ("IRON_WAVE", 4),
+    ("POMMEL_STRIKE", 4),
+    ("BATTLE_TRANCE", 3),
+    ("INFLAME", 3),
+    ("BODY_SLAM", 2),
+    ("BARRICADE", 2),
+    ("DEMON_FORM", 2),
+    ("DEMONIC_SHIELD", 2),
+    ("JUGGLING", 1),
+)
+BOSS_SAFE_RELIC_POOL = (
+    "RELIC.ANCHOR",
+    "RELIC.VAJRA",
+    "RELIC.BAG_OF_PREPARATION",
+    "RELIC.ODDLY_SMOOTH_STONE",
+    "RELIC.ORICHALCUM",
+    "RELIC.LANTERN",
+)
+BOSS_SAFE_POTION_POOL = (
+    "POTION.BLOCK_POTION",
+    "POTION.STRENGTH_POTION",
+    "POTION.DEXTERITY_POTION",
+    "POTION.FIRE_POTION",
 )
 
 
@@ -179,6 +207,13 @@ def build_combat_deck_spec(
             rng=rng,
             pool=pool,
             duplicate_cap=max(1, int(duplicate_cap)),
+            settings=settings,
+        )
+    if normalized_mode == "random_boss_synthetic_safe":
+        return _random_boss_safe_spec(
+            rng=rng,
+            pool=pool,
+            duplicate_cap=max(2, int(duplicate_cap)),
             settings=settings,
         )
     raise ValueError(f"Unsupported STS2 deck mode: {mode!r}")
@@ -321,6 +356,46 @@ def _random_floor_bucket_spec(
     )
 
 
+def _random_boss_safe_spec(
+    *,
+    rng: random.Random,
+    pool: list[DeckCardSpec],
+    duplicate_cap: int,
+    settings: dict[str, Any],
+) -> CombatDeckSpec:
+    cards = _starter_cards()
+    added = _sample_boss_safe_cards(
+        rng=rng,
+        pool=pool,
+        count=rng.randint(7, 11),
+        duplicate_cap=duplicate_cap,
+    )
+    cards.extend(added)
+    removed = _remove_starter_cards(rng=rng, cards=cards, max_remove=2)
+    upgraded = _upgrade_cards(rng=rng, cards=cards, max_upgrades=rng.randint(2, 4))
+    extra_relics = tuple(rng.sample(list(BOSS_SAFE_RELIC_POOL), k=rng.randint(1, 2)))
+    potions = (rng.choice(BOSS_SAFE_POTION_POOL),)
+    return CombatDeckSpec(
+        mode="random_boss_synthetic_safe",
+        source="synthetic_boss_safe_ironclad",
+        cards=tuple(cards),
+        relics=tuple(dict.fromkeys((*STARTER_RELICS, *extra_relics))),
+        potions=potions,
+        hp=rng.randint(68, 80),
+        max_hp=80,
+        added_cards=tuple(added),
+        removed_cards=tuple(removed),
+        upgraded_cards=tuple(upgraded),
+        generator_settings={
+            **settings,
+            "safe_card_weights": dict(BOSS_SAFE_CARD_WEIGHTS),
+            "relic_pool": list(BOSS_SAFE_RELIC_POOL),
+            "potion_pool": list(BOSS_SAFE_POTION_POOL),
+        },
+        apply_to_headless=True,
+    )
+
+
 def _sample_reward_cards(
     *,
     rng: random.Random,
@@ -342,6 +417,48 @@ def _sample_reward_cards(
             continue
         counts[chosen.id] += 1
         added.append(chosen)
+    return added
+
+
+def _sample_boss_safe_cards(
+    *,
+    rng: random.Random,
+    pool: list[DeckCardSpec],
+    count: int,
+    duplicate_cap: int,
+) -> list[DeckCardSpec]:
+    by_bare_id = {card.bare_id.upper(): card for card in pool}
+    weighted: list[DeckCardSpec] = []
+    for bare_id, weight in BOSS_SAFE_CARD_WEIGHTS:
+        card = by_bare_id.get(bare_id.upper())
+        if card is not None:
+            weighted.extend([card] * max(1, int(weight)))
+    if not weighted:
+        weighted = [
+            card
+            for card in pool
+            if card.type.lower() in {"attack", "skill", "power"}
+        ] or list(pool)
+
+    added: list[DeckCardSpec] = []
+    counts: Counter[str] = Counter()
+    attempts = 0
+    while len(added) < count and attempts < count * 80:
+        attempts += 1
+        chosen = rng.choice(weighted)
+        if counts[chosen.id] >= duplicate_cap:
+            continue
+        counts[chosen.id] += 1
+        added.append(chosen)
+    if len(added) < count:
+        added.extend(
+            _sample_reward_cards(
+                rng=rng,
+                pool=pool,
+                count=count - len(added),
+                duplicate_cap=duplicate_cap,
+            )
+        )
     return added
 
 
@@ -383,7 +500,11 @@ def _upgrade_cards(
 ) -> list[DeckCardSpec]:
     if max_upgrades <= 0:
         return []
-    upgrade_count = min(max_upgrades, _weighted_int(rng, [(0, 0.50), (1, 0.35), (2, 0.15)]))
+    if max_upgrades <= 2:
+        choices = [(0, 0.50), (1, 0.35), (2, 0.15)]
+    else:
+        choices = [(0, 0.20), (1, 0.30), (2, 0.25), (3, 0.15), (4, 0.10)]
+    upgrade_count = min(max_upgrades, _weighted_int(rng, choices))
     upgradable_indexes = [idx for idx, card in enumerate(cards) if not card.upgraded]
     rng.shuffle(upgradable_indexes)
     upgraded: list[DeckCardSpec] = []

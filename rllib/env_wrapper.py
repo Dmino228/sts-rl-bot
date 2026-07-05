@@ -312,6 +312,7 @@ def make_sts_rllib_env(env_config: Mapping[str, Any]) -> RLLibActionMaskEnv:
         sts2_deck_allow_problematic_cards=bool(
             _config_value(env_config, "sts2_deck_allow_problematic_cards", False)
         ),
+        sts2_encoder_mode=str(_config_value(env_config, "sts2_encoder_mode", "compact")),
     )
     heuristic_policy = _make_heuristic_policy(env_config, normalized_game)
     return RLLibActionMaskEnv(

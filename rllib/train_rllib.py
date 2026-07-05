@@ -159,6 +159,9 @@ def main() -> None:
         eval_random = int(config.get("eval_random_baseline", 0) or 0)
         if game_key == "sts2" and not config.get("smoke_test") and eval_random > 0:
             _run_random_combat_baseline(env_config=env_config, episodes=eval_random, logger=logger)
+        eval_greedy = int(config.get("eval_greedy_baseline", 0) or 0)
+        if game_key == "sts2" and not config.get("smoke_test") and eval_greedy > 0:
+            _run_greedy_combat_baseline(env_config=env_config, episodes=eval_greedy, logger=logger)
 
         target_steps = current_steps + target_timesteps
 
@@ -524,6 +527,7 @@ def _checkpoint_metadata_payload(
             "eval_combat_episodes": int(config.get("eval_combat_episodes", 0) or 0),
             "eval_combat_freq": int(config.get("eval_combat_freq", 0) or 0),
             "eval_random_baseline": int(config.get("eval_random_baseline", 0) or 0),
+            "eval_greedy_baseline": int(config.get("eval_greedy_baseline", 0) or 0),
             "eval_random_baseline_freq": int(config.get("eval_random_baseline_freq", 0) or 0),
             "eval_sts2_recycle_every_episodes": int(
                 config.get("eval_sts2_recycle_every_episodes", 0) or 0
@@ -549,6 +553,7 @@ def _checkpoint_metadata_payload(
             "sts2_deck_allow_problematic_cards": bool(
                 config.get("sts2_deck_allow_problematic_cards", False)
             ),
+            "sts2_encoder_mode": config.get("sts2_encoder_mode", "compact"),
             "sts2_cli_path": config.get("sts2_cli_path", ""),
             "sts2_cli_cwd": config.get("sts2_cli_cwd", ""),
             "sts2_cli_args": list(config.get("sts2_cli_args") or []),
@@ -699,9 +704,45 @@ def _combat_log_metrics(result: dict[str, Any]) -> dict[str, str]:
         "avg_monster_hp_remaining_on_loss": _format_metric(
             _custom_metric(result, "avg_monster_hp_remaining_on_loss_mean")
         ),
+        "avg_boss_hp_remaining_on_loss": _format_metric(
+            _custom_metric(result, "boss_hp_remaining_on_loss_mean")
+        ),
+        "avg_boss_hp_fraction_removed": _format_metric(
+            _custom_metric(result, "boss_hp_fraction_removed_mean")
+        ),
+        "avg_min_boss_hp_reached": _format_metric(
+            _custom_metric(result, "min_boss_hp_reached_mean")
+        ),
+        "avg_damage_dealt_total": _format_metric(
+            _custom_metric(result, "damage_dealt_total_mean")
+        ),
+        "avg_turns_survived": _format_metric(_custom_metric(result, "turns_survived_mean")),
+        "end_turn_with_energy_rate": _format_metric(
+            _custom_metric(result, "end_turn_with_energy_rate_mean")
+        ),
+        "end_turn_with_playable_attack_rate": _format_metric(
+            _custom_metric(result, "end_turn_with_playable_attack_rate_mean")
+        ),
+        "end_turn_with_playable_block_when_incoming_damage_rate": _format_metric(
+            _custom_metric(
+                result,
+                "end_turn_with_playable_block_when_incoming_damage_rate_mean",
+            )
+        ),
+        "power_play_rate": _format_metric(_custom_metric(result, "power_play_rate_mean")),
+        "block_when_incoming_damage_rate": _format_metric(
+            _custom_metric(result, "block_when_incoming_damage_rate_mean")
+        ),
         "avg_deck_size": _format_metric(_custom_metric(result, "deck_size_mean")),
         "encounters": _prefixed_custom_metrics(result, "encounter_id_"),
         "terminated_reasons": _prefixed_custom_metrics(result, "terminated_reason_"),
+        "cards_played_by_id": _prefixed_custom_metrics(result, "card_played_"),
+        "win_rate_by_boss": _boss_by_encounter_metrics(result, "win_rate"),
+        "hp_lost_by_boss": _boss_by_encounter_metrics(result, "hp_lost"),
+        "boss_hp_remaining_by_boss": _boss_by_encounter_metrics(
+            result,
+            "hp_remaining_on_loss",
+        ),
     }
 
 
@@ -734,6 +775,65 @@ def _ratio_or_none(numerator: Any, denominator: Any) -> float | None:
         return float(numerator) / denom
     except (TypeError, ValueError, ZeroDivisionError):
         return None
+
+
+def _boss_by_encounter_metrics(result: dict[str, Any], metric: str) -> str:
+    labels = _boss_metric_labels(result)
+    items: list[str] = []
+    for label in labels:
+        fights = _custom_metric(result, f"boss_{label}_fight_count_mean")
+        if fights is None:
+            continue
+        try:
+            if float(fights) <= 0.0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if metric == "win_rate":
+            value = _ratio_or_none(
+                _custom_metric(result, f"boss_{label}_win_count_mean"),
+                fights,
+            )
+        elif metric == "hp_lost":
+            value = _ratio_or_none(
+                _custom_metric(result, f"boss_{label}_hp_lost_sum_mean"),
+                fights,
+            )
+        elif metric == "hp_remaining_on_loss":
+            value = _ratio_or_none(
+                _custom_metric(result, f"boss_{label}_hp_remaining_on_loss_sum_mean"),
+                fights,
+            )
+        else:
+            value = None
+        items.append(f"{label}:{_format_metric(value)}")
+    return ",".join(items) if items else "n/a"
+
+
+def _boss_metric_labels(result: dict[str, Any]) -> list[str]:
+    metric_sources: list[dict[str, Any]] = []
+    custom_metrics = result.get("custom_metrics")
+    if isinstance(custom_metrics, dict):
+        metric_sources.append(custom_metrics)
+    env_runners = result.get("env_runners")
+    if isinstance(env_runners, dict):
+        env_custom_metrics = env_runners.get("custom_metrics")
+        if isinstance(env_custom_metrics, dict):
+            metric_sources.append(env_custom_metrics)
+        metric_sources.append(env_runners)
+    labels: list[str] = []
+    seen: set[str] = set()
+    prefix = "boss_"
+    suffix = "_fight_count_mean"
+    for source in metric_sources:
+        for key in sorted(source):
+            if not key.startswith(prefix) or not key.endswith(suffix):
+                continue
+            label = key[len(prefix): -len(suffix)]
+            if label and label not in seen:
+                seen.add(label)
+                labels.append(label)
+    return labels
 
 
 def _custom_metric(result: dict[str, Any], key: str) -> Any:
@@ -831,9 +931,14 @@ def _log_full_iteration(
             "floor_mean=%s max_floor=%s boss_reached%%=%s "
             "boss_killed%%=%s act2%%=%s combat_win_rate=%s "
             "combat_loss_rate=%s combat_timeout_rate=%s avg_combat_steps=%s "
-            "avg_hp_lost=%s "
+            "avg_hp_lost=%s avg_boss_hp_remaining_on_loss=%s "
+            "avg_boss_hp_fraction_removed=%s avg_damage_dealt_total=%s "
+            "avg_turns_survived=%s end_turn_energy_rate=%s "
+            "end_turn_playable_attack_rate=%s block_when_incoming_rate=%s "
+            "power_play_rate=%s "
             "weak_wr=%s normal_wr=%s elite_wr=%s boss_wr=%s "
-            "encounters=%s reasons=%s"
+            "win_rate_by_boss=%s boss_hp_remaining_by_boss=%s "
+            "encounters=%s reasons=%s cards_played=%s"
         ),
         result.get("training_iteration"),
         current_steps,
@@ -851,12 +956,23 @@ def _log_full_iteration(
         combat["combat_timeout_rate"],
         combat["avg_combat_steps"],
         combat["avg_hp_lost"],
+        combat.get("avg_boss_hp_remaining_on_loss", "n/a"),
+        combat.get("avg_boss_hp_fraction_removed", "n/a"),
+        combat.get("avg_damage_dealt_total", "n/a"),
+        combat.get("avg_turns_survived", "n/a"),
+        combat.get("end_turn_with_energy_rate", "n/a"),
+        combat.get("end_turn_with_playable_attack_rate", "n/a"),
+        combat.get("block_when_incoming_damage_rate", "n/a"),
+        combat.get("power_play_rate", "n/a"),
         grouped.get("weak_win_rate", "n/a"),
         grouped.get("normal_win_rate", "n/a"),
         grouped.get("elite_win_rate", "n/a"),
         grouped.get("boss_win_rate", "n/a"),
+        combat.get("win_rate_by_boss", "n/a"),
+        combat.get("boss_hp_remaining_by_boss", "n/a"),
         combat["encounters"],
         combat["terminated_reasons"],
+        combat.get("cards_played_by_id", "n/a"),
     )
 
 
@@ -891,15 +1007,199 @@ def _run_random_combat_baseline(
         (
             "Random combat baseline: episodes=%d random_combat_win_rate=%s "
             "random_avg_combat_steps=%s random_avg_hp_lost=%s "
-            "random_win_rate_by_encounter=%s"
+            "random_boss_hp_remaining_on_loss=%s random_win_rate_by_encounter=%s "
+            "random_boss_hp_remaining_by_encounter=%s"
         ),
         episodes,
         _format_metric(metrics["combat_win_rate"]),
         _format_metric(metrics["avg_combat_steps"]),
         _format_metric(metrics["avg_hp_lost"]),
+        _format_metric(metrics["avg_boss_hp_remaining_on_loss"]),
         metrics["win_rate_by_encounter"],
+        metrics["avg_boss_hp_remaining_by_encounter"],
     )
     return metrics
+
+
+def _run_greedy_combat_baseline(
+    *,
+    env_config: dict[str, Any],
+    episodes: int,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    def select_greedy_action(observation: dict[str, Any], env: Any) -> int:
+        return _select_greedy_combat_action(observation, env)
+
+    metrics = _run_manual_combat_eval(
+        env_config=env_config,
+        episodes=episodes,
+        worker_id=900003,
+        action_selector=select_greedy_action,
+    )
+    logger.info(
+        (
+            "Greedy combat baseline: episodes=%d greedy_combat_win_rate=%s "
+            "greedy_avg_combat_steps=%s greedy_avg_hp_lost=%s "
+            "greedy_boss_hp_remaining_on_loss=%s greedy_win_rate_by_encounter=%s "
+            "greedy_boss_hp_remaining_by_encounter=%s"
+        ),
+        episodes,
+        _format_metric(metrics["combat_win_rate"]),
+        _format_metric(metrics["avg_combat_steps"]),
+        _format_metric(metrics["avg_hp_lost"]),
+        _format_metric(metrics["avg_boss_hp_remaining_on_loss"]),
+        metrics["win_rate_by_encounter"],
+        metrics["avg_boss_hp_remaining_by_encounter"],
+    )
+    return metrics
+
+
+def _select_greedy_combat_action(observation: dict[str, Any], env: Any) -> int:
+    mask = np.asarray(observation.get("action_mask", []), dtype=np.float32)
+    valid = set(int(idx) for idx in np.flatnonzero(mask > 0.0))
+    if not valid:
+        return 0
+    base_env = getattr(env, "env", env)
+    state = getattr(base_env, "current_state", {}) or {}
+    try:
+        from sts2.action_space import END_TURN_ACTION, build_legal_commands
+    except Exception:
+        return min(valid)
+    commands = build_legal_commands(state)
+    enemies = _greedy_enemies(state)
+    incoming = _greedy_incoming_damage(state)
+    player_block = _greedy_player_block(state)
+
+    best_action = min(valid)
+    best_score = -1e9
+    for action_id in sorted(valid):
+        command = commands.get(action_id)
+        score = 0.0
+        if isinstance(command, dict) and command.get("action") == "play_card":
+            card = _greedy_card_for_command(state, command)
+            card_type = str(card.get("type") or "").lower() if isinstance(card, dict) else ""
+            damage = _greedy_card_number(card, "damage")
+            block = _greedy_card_number(card, "block")
+            target_hp = _greedy_target_hp(enemies, command)
+            if card_type == "power":
+                score += 35.0
+            if damage > 0:
+                score += 5.0 + damage
+                if target_hp is not None and damage >= target_hp:
+                    score += 100.0
+            if block > 0:
+                score += block * (2.0 if incoming > player_block else 0.6)
+            cost = _greedy_card_number(card, "cost")
+            score -= 0.05 * max(0.0, cost)
+        elif isinstance(command, dict) and command.get("action") == "use_potion":
+            score += 20.0
+        elif action_id == END_TURN_ACTION:
+            score -= 15.0 if incoming > player_block else 2.0
+        else:
+            score -= 1.0
+        if score > best_score:
+            best_score = score
+            best_action = action_id
+    return int(best_action)
+
+
+def _greedy_card_for_command(state: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
+    args = command.get("args")
+    card_index = -1
+    if isinstance(args, dict):
+        try:
+            card_index = int(args.get("card_index", -1))
+        except (TypeError, ValueError):
+            card_index = -1
+    hand = _greedy_hand(state)
+    for slot, card in enumerate(hand):
+        if not isinstance(card, dict):
+            continue
+        try:
+            idx = int(card.get("index", slot))
+        except (TypeError, ValueError):
+            idx = slot
+        if idx == card_index:
+            return card
+    return {}
+
+
+def _greedy_hand(state: dict[str, Any]) -> list[Any]:
+    if isinstance(state.get("hand"), list):
+        return list(state["hand"])
+    game_state = state.get("game_state", {})
+    if isinstance(game_state, dict):
+        combat_state = game_state.get("combat_state", {})
+        if isinstance(combat_state, dict) and isinstance(combat_state.get("hand"), list):
+            return list(combat_state["hand"])
+    return []
+
+
+def _greedy_enemies(state: dict[str, Any]) -> list[Any]:
+    if isinstance(state.get("enemies"), list):
+        return list(state["enemies"])
+    game_state = state.get("game_state", {})
+    if isinstance(game_state, dict):
+        combat_state = game_state.get("combat_state", {})
+        if isinstance(combat_state, dict) and isinstance(combat_state.get("monsters"), list):
+            return list(combat_state["monsters"])
+    return []
+
+
+def _greedy_player_block(state: dict[str, Any]) -> int:
+    player = state.get("player")
+    if isinstance(player, dict):
+        return int(player.get("block") or 0)
+    game_state = state.get("game_state", {})
+    if isinstance(game_state, dict):
+        combat_state = game_state.get("combat_state", {})
+        if isinstance(combat_state, dict) and isinstance(combat_state.get("player"), dict):
+            return int(combat_state["player"].get("block") or 0)
+    return 0
+
+
+def _greedy_incoming_damage(state: dict[str, Any]) -> int:
+    total = 0
+    for enemy in _greedy_enemies(state):
+        if not isinstance(enemy, dict) or enemy.get("is_gone", False):
+            continue
+        for intent in enemy.get("intents") or []:
+            if isinstance(intent, dict) and "attack" in str(intent.get("type") or "").lower():
+                total += int(intent.get("damage") or 0)
+        for key in ("intent_damage", "damage"):
+            if enemy.get(key) is not None:
+                total += int(enemy.get(key) or 0)
+                break
+    return max(0, total)
+
+
+def _greedy_target_hp(enemies: list[Any], command: dict[str, Any]) -> int | None:
+    args = command.get("args")
+    if not isinstance(args, dict) or args.get("target_index") is None:
+        return None
+    try:
+        target_index = int(args.get("target_index"))
+    except (TypeError, ValueError):
+        return None
+    if target_index < 0 or target_index >= len(enemies):
+        return None
+    enemy = enemies[target_index]
+    if not isinstance(enemy, dict):
+        return None
+    return int(enemy.get("current_hp", enemy.get("hp", 0)) or 0)
+
+
+def _greedy_card_number(card: Any, field: str) -> float:
+    if not isinstance(card, dict):
+        return 0.0
+    stats = card.get("stats")
+    value = stats.get(field) if isinstance(stats, dict) else None
+    if value is None:
+        value = card.get(field)
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _run_policy_combat_eval(
@@ -934,7 +1234,8 @@ def _run_policy_combat_eval(
         (
             "PPO combat eval: episodes=%d deterministic=%s eval_combat_win_rate=%s "
             "eval_avg_combat_steps=%s eval_avg_hp_lost=%s "
-            "eval_win_rate_by_encounter=%s eval_avg_hp_lost_by_encounter=%s "
+            "eval_boss_hp_remaining_on_loss=%s eval_win_rate_by_encounter=%s "
+            "eval_avg_hp_lost_by_encounter=%s eval_boss_hp_remaining_by_encounter=%s "
             "eval_avg_steps_by_encounter=%s"
         ),
         episodes,
@@ -942,8 +1243,10 @@ def _run_policy_combat_eval(
         _format_metric(metrics["combat_win_rate"]),
         _format_metric(metrics["avg_combat_steps"]),
         _format_metric(metrics["avg_hp_lost"]),
+        _format_metric(metrics["avg_boss_hp_remaining_on_loss"]),
         metrics["win_rate_by_encounter"],
         metrics["avg_hp_lost_by_encounter"],
+        metrics["avg_boss_hp_remaining_by_encounter"],
         metrics["avg_steps_by_encounter"],
     )
     return metrics
@@ -978,7 +1281,10 @@ def _run_manual_combat_eval(
             truncated = False
             guard = 0
             while not (terminated or truncated):
-                action = int(action_selector(observation))
+                try:
+                    action = int(action_selector(observation, env))
+                except TypeError:
+                    action = int(action_selector(observation))
                 observation, _reward, terminated, truncated, info = env.step(action)
                 final_info = info
                 guard += 1
@@ -1000,6 +1306,8 @@ def _new_combat_eval_stats() -> dict[str, Any]:
         "timeouts": 0.0,
         "steps": 0.0,
         "hp_lost": 0.0,
+        "boss_hp_remaining_on_loss": 0.0,
+        "damage_dealt_total": 0.0,
         "by_encounter": {},
         "by_category": {},
     }
@@ -1018,6 +1326,8 @@ def _record_combat_eval_episode(stats: dict[str, Any], info: Any) -> None:
     encounter = str(progress.get("encounter_id") or "unknown")
     steps = _safe_number(progress.get("combat_steps"))
     hp_lost = _safe_number(progress.get("hp_lost"))
+    boss_hp_remaining = _safe_number(progress.get("boss_hp_remaining_on_loss"))
+    damage_dealt_total = _safe_number(progress.get("damage_dealt_total"))
     category = classify_encounter(encounter)
 
     stats["episodes"] += 1
@@ -1026,25 +1336,45 @@ def _record_combat_eval_episode(stats: dict[str, Any], info: Any) -> None:
     stats["timeouts"] += float(reason == "timeout")
     stats["steps"] += steps
     stats["hp_lost"] += hp_lost
+    stats["boss_hp_remaining_on_loss"] += boss_hp_remaining
+    stats["damage_dealt_total"] += damage_dealt_total
 
     by_encounter = stats["by_encounter"].setdefault(
         encounter,
-        {"episodes": 0, "wins": 0.0, "steps": 0.0, "hp_lost": 0.0},
+        {
+            "episodes": 0,
+            "wins": 0.0,
+            "steps": 0.0,
+            "hp_lost": 0.0,
+            "boss_hp_remaining_on_loss": 0.0,
+            "damage_dealt_total": 0.0,
+        },
     )
     by_encounter["episodes"] += 1
     by_encounter["wins"] += float(reason == "win")
     by_encounter["steps"] += steps
     by_encounter["hp_lost"] += hp_lost
+    by_encounter["boss_hp_remaining_on_loss"] += boss_hp_remaining
+    by_encounter["damage_dealt_total"] += damage_dealt_total
 
     # Category-level grouping
     by_category = stats["by_category"].setdefault(
         category,
-        {"episodes": 0, "wins": 0.0, "steps": 0.0, "hp_lost": 0.0},
+        {
+            "episodes": 0,
+            "wins": 0.0,
+            "steps": 0.0,
+            "hp_lost": 0.0,
+            "boss_hp_remaining_on_loss": 0.0,
+            "damage_dealt_total": 0.0,
+        },
     )
     by_category["episodes"] += 1
     by_category["wins"] += float(reason == "win")
     by_category["steps"] += steps
     by_category["hp_lost"] += hp_lost
+    by_category["boss_hp_remaining_on_loss"] += boss_hp_remaining
+    by_category["damage_dealt_total"] += damage_dealt_total
 
 
 def _finalize_combat_eval_stats(stats: dict[str, Any]) -> dict[str, Any]:
@@ -1056,8 +1386,20 @@ def _finalize_combat_eval_stats(stats: dict[str, Any]) -> dict[str, Any]:
         "combat_timeout_rate": float(stats["timeouts"]) / episodes,
         "avg_combat_steps": float(stats["steps"]) / episodes,
         "avg_hp_lost": float(stats["hp_lost"]) / episodes,
+        "avg_boss_hp_remaining_on_loss": float(stats["boss_hp_remaining_on_loss"]) / episodes,
+        "avg_damage_dealt_total": float(stats["damage_dealt_total"]) / episodes,
         "win_rate_by_encounter": _format_by_encounter(stats, "wins", "episodes"),
         "avg_hp_lost_by_encounter": _format_by_encounter(stats, "hp_lost", "episodes"),
+        "avg_boss_hp_remaining_by_encounter": _format_by_encounter(
+            stats,
+            "boss_hp_remaining_on_loss",
+            "episodes",
+        ),
+        "avg_damage_dealt_by_encounter": _format_by_encounter(
+            stats,
+            "damage_dealt_total",
+            "episodes",
+        ),
         "avg_steps_by_encounter": _format_by_encounter(stats, "steps", "episodes"),
     }
 
@@ -1069,6 +1411,14 @@ def _finalize_combat_eval_stats(stats: dict[str, Any]) -> dict[str, Any]:
         cat_any = int(cat_stats.get("episodes", 0)) > 0
         grouped[f"{cat}_win_rate"] = float(cat_stats.get("wins", 0.0)) / cat_episodes if cat_any else None
         grouped[f"{cat}_avg_hp_lost"] = float(cat_stats.get("hp_lost", 0.0)) / cat_episodes if cat_any else None
+        grouped[f"{cat}_avg_boss_hp_remaining_on_loss"] = (
+            float(cat_stats.get("boss_hp_remaining_on_loss", 0.0)) / cat_episodes
+            if cat_any else None
+        )
+        grouped[f"{cat}_avg_damage_dealt_total"] = (
+            float(cat_stats.get("damage_dealt_total", 0.0)) / cat_episodes
+            if cat_any else None
+        )
         grouped[f"{cat}_episodes"] = int(cat_stats.get("episodes", 0))
     result["grouped_metrics"] = grouped
 

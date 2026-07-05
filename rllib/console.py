@@ -302,6 +302,10 @@ class TrainingConsole:
                 f"loss={combat_metrics.get('combat_loss_rate', 'n/a')}",
                 f"timeout={combat_metrics.get('combat_timeout_rate', 'n/a')}",
                 f"hp_lost={combat_metrics.get('avg_hp_lost', 'n/a')}",
+                f"boss_hp_left_loss={combat_metrics.get('avg_boss_hp_remaining_on_loss', 'n/a')}",
+                f"boss_hp_removed={combat_metrics.get('avg_boss_hp_fraction_removed', 'n/a')}",
+                f"dmg_total={combat_metrics.get('avg_damage_dealt_total', 'n/a')}",
+                f"turns={combat_metrics.get('avg_turns_survived', 'n/a')}",
                 f"combat_steps={combat_metrics.get('avg_combat_steps', 'n/a')}",
             ]
             if grouped_combat_metrics:
